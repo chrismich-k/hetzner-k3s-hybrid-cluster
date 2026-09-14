@@ -1,0 +1,45 @@
+# Terraform
+terraform/*.tfvars
+terraform/*.tfvars.json
+!terraform/*.tfvars.example
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/crash.log
+terraform/crash.*.log
+
+# Terraform remote-state backend config: optional and environment-specific
+# (bucket/key/region), same treatment as *.tfvars above - copy
+# backend.tf.example to backend.tf and edit it, don't commit the result
+terraform/backend.tf
+!terraform/backend.tf.example
+
+# Ansible-Vault: never commit the password used to decrypt vault.yaml files
+# (the vault.yaml files themselves are fine to commit, they're encrypted)
+.vault_pass*
+.vault-pass*
+vault_pass.txt
+vault-pass.txt
+*.vault_pass
+
+# Ansible runtime/editor noise
+*.retry
+*.swp
+*.swo
+*~
+
+# local Python venvs (e.g. ansible/.venv)
+.venv/
+venv/
+
+# local ansible-galaxy role/collection cache
+.ansible/
+
+# roles/oauth2_proxy's local Kustomize build directory - every file in it
+# is either copied verbatim from roles/oauth2_proxy/files/ or rendered
+# from roles/oauth2_proxy/templates/ at every run, so none of it is a
+# unique source of truth. kustomization.yaml in particular ends up
+# containing real secrets (OAUTH2_PROXY_CLIENT_SECRET,
+# OAUTH2_PROXY_COOKIE_SECRET) via its secretGenerator - this is also why
+# the whole directory is ignored rather than just that one file.
+ansible/build/

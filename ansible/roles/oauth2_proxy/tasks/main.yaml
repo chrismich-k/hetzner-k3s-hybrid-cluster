@@ -1,0 +1,75 @@
+---
+- name: Keycloak Deployment
+  block:
+    # install oauth2_proxy - src: for both copy and template below is
+    # resolved relative to this role's own files/ and templates/ dirs
+    # (roles/oauth2_proxy/{files,templates}/). dest: is a git-ignored
+    # local build directory (ansible/build/oauth2_proxy/), from which
+    # "Run kustomize locally" below builds the final manifests from.
+    - name: Ensure the local oauth2_proxy build directory exists
+      ansible.builtin.file:
+        path: build/oauth2_proxy
+        state: directory
+      delegate_to: localhost
+      become: false
+
+    - name: Copy static oauth2_proxy Deployment into the local build directory
+      ansible.builtin.copy:
+        src: deployment.yaml
+        dest: build/oauth2_proxy/deployment.yaml
+      delegate_to: localhost
+      become: false
+
+    - name: Copy static oauth2_proxy Service into the local build directory
+      ansible.builtin.copy:
+        src: service.yaml
+        dest: build/oauth2_proxy/service.yaml
+      delegate_to: localhost
+      become: false
+
+    - name: Generate oauth2_proxy kustomization file from template
+      ansible.builtin.template:
+        src: oauth-kustomization.yaml.j2
+        dest: build/oauth2_proxy/kustomization.yaml
+      delegate_to: localhost
+      become: false
+      # renders real secrets (oauth2_proxy_client_secret,
+      # vault_oauth_cookie_secret) into the file - never log this task's
+      # diff/content. The whole build/ directory is also gitignored (see
+      # .gitignore) precisely because of this.
+      no_log: true
+
+    - name: Generate oauth2_proxy ingressroute from template
+      ansible.builtin.template:
+        src: oauth-ingressroute.yaml.j2
+        dest: build/oauth2_proxy/ingressroute.yaml
+      delegate_to: localhost
+      become: false
+
+    - name: Generate oauth2_proxy middleware from template
+      ansible.builtin.template:
+        src: oauth-traefik-middleware.yaml.j2
+        dest: build/oauth2_proxy/traefik-middleware.yaml
+      delegate_to: localhost
+      become: false
+
+    - name: Run kustomize locally
+      ansible.builtin.command: "kubectl kustomize build/oauth2_proxy/"
+      delegate_to: localhost
+      register: oauth2_proxy_kustomize_output
+      changed_when: false
+      become: false
+
+    - name: Apply oauth2_proxy to the cluster
+      kubernetes.core.k8s:
+        definition: "{{ oauth2_proxy_kustomize_output.stdout | from_yaml_all | list }}"
+
+    # auth-domain
+    - name: Set up TLS certificate for auth_domain
+      ansible.builtin.include_role:
+        name: domain_cert
+      vars:
+        domain_cert_domain: "{{ auth_domain }}"
+        domain_cert_cert_name: authdomain-cert
+        domain_cert_secret_name: authdomain-tls-secret
+        domain_cert_cert_namespace: "{{ traefik_namespace }}"

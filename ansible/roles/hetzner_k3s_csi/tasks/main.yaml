@@ -1,0 +1,22 @@
+---
+- name: Install Hetzner Cloud CSI-Plugin on K3s hybrid cluster
+  block:
+    - name: Install Hetzner Cloud CSI plugin via Helm
+      kubernetes.core.helm:
+        name: hcloud-csi
+        chart_ref: hcloud/hcloud-csi
+        release_namespace: kube-system
+        wait: true
+        values:
+          secret:
+            name: hcloud
+            tokenKey: token
+          storageClass:
+            defaultStorageClass: true
+          enableProvidedByTopology: true
+          controller:
+            nodeSelector:
+              instance.type: "hcloud"
+          node:
+            nodeSelector:
+              instance.type: "hcloud"

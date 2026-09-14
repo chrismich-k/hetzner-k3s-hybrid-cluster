@@ -1,0 +1,306 @@
+---
+- name: Install kube_prometheus_stack (Prometheus, Grafana, Alertmanager)
+  block:
+    - name: Create monitoring namespace
+      kubernetes.core.k8s:
+        name: "{{ monitoring_namespace }}"
+        kind: Namespace
+        state: present
+
+    # this role registers its own Keycloak client
+    - name: Ensure Grafana client exists in Keycloak
+      community.general.keycloak_client:
+        auth_keycloak_url: "https://{{ keycloak_domain }}"
+        auth_realm: master
+        auth_username: "{{ vault_keycloak_bootstrap_admin_user }}"
+        auth_password: "{{ vault_keycloak_bootstrap_admin_password }}"
+        realm: "{{ realm_name }}"
+        client_id: "{{ grafana_client_id }}"
+        name: "{{ grafana_client_id }}"
+        enabled: true
+        protocol: openid-connect
+        public_client: false
+        standard_flow_enabled: true
+        direct_access_grants_enabled: false
+        root_url: "https://{{ grafana_domain }}"
+        base_url: "https://{{ grafana_domain }}"
+        redirect_uris:
+          - "https://{{ grafana_domain }}/login/generic_oauth"
+        web_origins:
+          - "https://{{ grafana_domain }}"
+        state: present
+      register: kube_prometheus_stack_kc_client_result
+      # same rationale as roles/keycloak_config: Keycloak's pod can be
+      # Running/ready-for-traffic before its own bootstrap has finished
+      until: kube_prometheus_stack_kc_client_result is succeeded
+      retries: 10
+      delay: 15
+
+    # client roles on the grafana client (not realm roles, so no "grafana"-
+    # prefix needed). Mapped to Grafana org roles below via
+    # role_attribute_path. Not auto-assigned to any user here -
+    # assign editor/admin to specific users by hand in the Keycloak admin
+    # console once they need more than the default Viewer
+    - name: Ensure Grafana editor/admin client roles exist in Keycloak
+      community.general.keycloak_role:
+        auth_keycloak_url: "https://{{ keycloak_domain }}"
+        auth_realm: master
+        auth_username: "{{ vault_keycloak_bootstrap_admin_user }}"
+        auth_password: "{{ vault_keycloak_bootstrap_admin_password }}"
+        realm: "{{ realm_name }}"
+        client_id: "{{ grafana_client_id }}"
+        name: "{{ item }}"
+        state: present
+      loop:
+        - editor
+        - admin
+      register: kube_prometheus_stack_kc_role_result
+      until: kube_prometheus_stack_kc_role_result is succeeded
+      retries: 10
+      delay: 15
+
+    # community.general.keycloak_client never returns the real secret - its
+    # sanitize_cr() helper hardcodes result.end_state.secret to the literal
+    # string "no_log" regardless of any no_log setting here. See
+    # roles/keycloak_config for the full explanation; keycloak_clientsecret_info
+    # is the module that actually fetches the value via the Admin API.
+    - name: Retrieve the Grafana client secret from Keycloak
+      community.general.keycloak_clientsecret_info:
+        auth_keycloak_url: "https://{{ keycloak_domain }}"
+        auth_realm: master
+        auth_username: "{{ vault_keycloak_bootstrap_admin_user }}"
+        auth_password: "{{ vault_keycloak_bootstrap_admin_password }}"
+        realm: "{{ realm_name }}"
+        client_id: "{{ grafana_client_id }}"
+      register: kube_prometheus_stack_kc_clientsecret_result
+
+    - name: Create Grafana OIDC client secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: grafana-oidc-secret
+            namespace: "{{ monitoring_namespace }}"
+          type: Opaque
+          stringData:
+            client-secret: "{{ kube_prometheus_stack_kc_clientsecret_result.clientsecret_info.value }}"
+      no_log: true
+
+    # local Grafana admin login stays available as a break-glass account
+    # alongside Keycloak SSO - vault_grafana_admin_password must be added to
+    # group_vars/all/vault.yaml by hand (ansible-vault edit), same as the
+    # Keycloak bootstrap admin credentials
+    - name: Create Grafana admin credentials secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: grafana-admin-secret
+            namespace: "{{ monitoring_namespace }}"
+          type: Opaque
+          stringData:
+            admin-user: admin
+            admin-password: "{{ vault_grafana_admin_password }}"
+      no_log: true
+
+    - name: Add prometheus-community Helm repository
+      kubernetes.core.helm_repository:
+        name: prometheus-community
+        repo_url: "https://prometheus-community.github.io/helm-charts"
+
+    - name: Install kube-prometheus-stack via Helm
+      kubernetes.core.helm:
+        name: kube-prometheus-stack
+        chart_ref: prometheus-community/kube-prometheus-stack
+        release_namespace: "{{ monitoring_namespace }}"
+        wait: true
+        # this chart installs far more (CRDs, Prometheus Operator, several
+        # StatefulSets/Deployments/DaemonSets, so increased wait timeout
+        # needed)
+        wait_timeout: 900s
+        values:
+          # pin everything to the infrastructure node - local-path PVs are
+          # node-bound, same reasoning as roles/cloudnative_pg and the
+          # Keycloak Postgres instance in roles/keycloak_operator
+          # kube-controller-manager/scheduler/etcd/kube-proxy are bundled
+          # into the single k3s binary on this cluster rather than exposed
+          # as separately-discoverable kube-system Services, so the chart's
+          # default component ServiceMonitors for them would just sit
+          # permanently "down" - disabled here rather than leaving that
+          # noise. kubelet (the one that actually works on k3s, covering
+          # node/pod/cAdvisor metrics) stays enabled at its chart default.
+          kubeControllerManager:
+            enabled: false
+          kubeScheduler:
+            enabled: false
+          kubeEtcd:
+            enabled: false
+          kubeProxy:
+            enabled: false
+
+          prometheus:
+            prometheusSpec:
+              retention: "{{ prometheus_retention }}"
+              # capped since this node is shared with Postgres/Keycloak-DB -
+              # bump if Prometheus gets OOMKilled under real cardinality
+              resources:
+                requests:
+                  memory: 512Mi
+                  cpu: 200m
+                limits:
+                  memory: 1Gi
+                  cpu: 1000m
+              nodeSelector:
+                "node-purpose/infrastructure": "true"
+              tolerations:
+                - key: "node.kubernetes.io/network-unavailable"
+                  operator: "Exists"
+                  effect: "NoSchedule"
+              storageSpec:
+                volumeClaimTemplate:
+                  spec:
+                    storageClassName: local-path
+                    accessModes: ["ReadWriteOnce"]
+                    resources:
+                      requests:
+                        storage: "{{ prometheus_storage_size }}"
+
+          # installed, but without any configured receivers (Slack/email) -
+          # wire up alertmanager.config here once actual alert routing is
+          # wanted
+          alertmanager:
+            alertmanagerSpec:
+              resources:
+                requests:
+                  memory: 64Mi
+                  cpu: 50m
+                limits:
+                  memory: 128Mi
+                  cpu: 100m
+              nodeSelector:
+                "node-purpose/infrastructure": "true"
+              tolerations:
+                - key: "node.kubernetes.io/network-unavailable"
+                  operator: "Exists"
+                  effect: "NoSchedule"
+              storage:
+                volumeClaimTemplate:
+                  spec:
+                    storageClassName: local-path
+                    accessModes: ["ReadWriteOnce"]
+                    resources:
+                      requests:
+                        storage: "{{ alertmanager_storage_size }}"
+
+          grafana:
+            resources:
+              requests:
+                memory: 384Mi
+                cpu: 100m
+              limits:
+                # 512Mi limit OOMKilled the main grafana container
+                memory: 1Gi
+                cpu: 300m
+            nodeSelector:
+              "node-purpose/infrastructure": "true"
+            tolerations:
+              - key: "node.kubernetes.io/network-unavailable"
+                operator: "Exists"
+                effect: "NoSchedule"
+            # explicit cert-manager Certificate + Traefik IngressRoute below
+            # instead
+            ingress:
+              enabled: false
+            admin:
+              existingSecret: grafana-admin-secret
+              userKey: admin-user
+              passwordKey: admin-password
+            envValueFrom:
+              GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET:
+                secretKeyRef:
+                  name: grafana-oidc-secret
+                  key: client-secret
+            grafana.ini:
+              server:
+                root_url: "https://{{ grafana_domain }}/"
+              users:
+                auto_assign_org_role: Viewer
+              auth.generic_oauth:
+                enabled: true
+                name: Keycloak
+                client_id: "{{ grafana_client_id }}"
+                scopes: "openid email profile"
+                auth_url: "https://{{ keycloak_domain }}/realms/{{ realm_name }}/protocol/openid-connect/auth"
+                token_url: "https://{{ keycloak_domain }}/realms/{{ realm_name }}/protocol/openid-connect/token"
+                api_url: "https://{{ keycloak_domain }}/realms/{{ realm_name }}/protocol/openid-connect/userinfo"
+                allow_sign_up: true
+                # maps the admin/editor Keycloak client roles (created
+                # above, on this same grafana client) to Grafana org roles -
+                # relies on the "roles" client scope being one of the ktest
+                # realm's default client scopes (stock Keycloak behaviour,
+                # not explicitly configured by roles/keycloak_config) so
+                # that resource_access.<client>.roles ends up in the ID
+                # token at all; verify with the token content directly if
+                # role mapping doesn't seem to take effect.
+                # role_attribute_strict: false means an unresolvable claim
+                # falls back to auto_assign_org_role (Viewer) instead of
+                # blocking login.
+                role_attribute_path: "contains(resource_access.{{ grafana_client_id }}.roles[*], 'admin') && 'Admin' ||
+                  contains(resource_access.{{ grafana_client_id }}.roles[*], 'editor') && 'Editor' || 'Viewer'"
+                role_attribute_strict: false
+
+          # resources for node-exporter/kube-state-metrics go under these
+          # hyphenated subchart keys, not the camelCase nodeExporter:/
+          # kubeStateMetrics: keys above (those only carry the .enabled
+          # toggle - anything else under them is silently ignored by Helm)
+          prometheus-node-exporter:
+            resources:
+              requests:
+                memory: 32Mi
+                cpu: 50m
+              limits:
+                memory: 64Mi
+                cpu: 100m
+
+          kube-state-metrics:
+            resources:
+              requests:
+                memory: 64Mi
+                cpu: 50m
+              limits:
+                memory: 128Mi
+                cpu: 100m
+
+    - name: Set up TLS certificate for Grafana
+      ansible.builtin.include_role:
+        name: domain_cert
+      vars:
+        domain_cert_domain: "{{ grafana_domain }}"
+        domain_cert_cert_name: grafana-cert
+        domain_cert_secret_name: grafana-tls-secret
+        domain_cert_cert_namespace: "{{ monitoring_namespace }}"
+
+    - name: Create Grafana IngressRoute via Traefik CRD
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: traefik.io/v1alpha1
+          kind: IngressRoute
+          metadata:
+            name: grafana-ingressroute
+            namespace: "{{ monitoring_namespace }}"
+          spec:
+            entryPoints:
+              - websecure
+            routes:
+              - match: "Host(`{{ grafana_domain }}`)"
+                kind: Rule
+                services:
+                  - name: kube-prometheus-stack-grafana
+                    port: 80
+            tls:
+              secretName: grafana-tls-secret

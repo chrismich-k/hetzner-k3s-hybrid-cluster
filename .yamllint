@@ -1,0 +1,34 @@
+---
+extends: default
+
+rules:
+  # matches the threshold ansible-lint's bundled yamllint config already
+  # uses for this repo, to avoid two tools disagreeing on the same lines
+  line-length:
+    max: 160
+  document-start:
+    present: true
+  truthy:
+    allowed-values: ["true", "false"]
+
+  # ansible-lint refuses to use a custom .yamllint config at all unless it
+  # matches these exact values (confirmed by running ansible-lint against
+  # this file: it lists these as hard requirements) - without them
+  # ansible-lint silently falls back to its own bundled config instead of
+  # this file, which defeats the point of having one.
+  comments:
+    min-spaces-from-content: 1
+  comments-indentation: false
+  braces:
+    max-spaces-inside: 1
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true
+
+ignore: |
+  ansible/.venv/
+  ansible/build/
+  terraform/.terraform/
+  # ansible-vault encrypted files are ciphertext, not real YAML at rest -
+  # linting them for structure/formatting is meaningless
+  vault.yaml

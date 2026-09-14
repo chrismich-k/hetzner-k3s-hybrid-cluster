@@ -1,0 +1,29 @@
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oauth-auth
+  # needs to be in same namespace as traefik (i.e. traefik or kube-system)
+  namespace: kube-system
+spec:
+  forwardAuth:
+    address: "http://oauth2-proxy.{{ traefik_namespace }}.svc.cluster.local:4180/oauth2/auth"
+    trustForwardHeader: true
+    authResponseHeaders:
+      - "X-Auth-User"
+      - "X-Auth-Email"
+      - "Authorization"
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oauth-errors
+  # needs to be in same namespace as traefik (i.e. traefik or kube-system)
+  namespace: kube-system
+spec:
+  errors:
+    status: ["401-403"]
+    service:
+      name: oauth2-proxy
+      namespace: kube-system
+      port: 4180
+    query: /oauth2/sign_in?rd={url}

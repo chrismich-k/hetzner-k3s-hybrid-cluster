@@ -1,0 +1,74 @@
+---
+- name: Keycloak Config for OAuth2 Proxy
+  block:
+    - name: Ensure the realm exists in keycloak
+      community.general.keycloak_realm:
+        auth_keycloak_url: "https://{{ keycloak_domain }}"
+        auth_realm: master
+        auth_username: "{{ vault_keycloak_bootstrap_admin_user }}"
+        auth_password: "{{ vault_keycloak_bootstrap_admin_password }}"
+        realm: "{{ realm_name }}"
+        enabled: true
+        state: present
+      register: keycloak_config_kc_realm_result
+      # see the retry note on the client task below
+      until: keycloak_config_kc_realm_result is succeeded
+      retries: 10
+      delay: 15
+      no_log: true
+
+    # a real user for logging into this realm is intentionally not created
+    # here - that's only needed for actual app access/login, not for
+    # installing the stack, and is left for the admin to add manually
+    - name: Setup oauth2_proxy client in keycloak
+      community.general.keycloak_client:
+        auth_keycloak_url: "https://{{ keycloak_domain }}"
+        auth_realm: master
+        auth_username: "{{ vault_keycloak_bootstrap_admin_user }}"
+        auth_password: "{{ vault_keycloak_bootstrap_admin_password }}"
+        realm: "{{ realm_name }}"
+        client_id: oauth2-proxy
+        name: oauth2-proxy
+        enabled: true
+        protocol: openid-connect
+        public_client: false
+        standard_flow_enabled: true
+        direct_access_grants_enabled: false
+        root_url: "https://{{ auth_domain }}"
+        base_url: "https://{{ auth_domain }}"
+        redirect_uris:
+          - "https://{{ auth_domain }}/oauth2/callback"
+        web_origins:
+          - "https://{{ auth_domain }}"
+        state: present
+      register: keycloak_config_kc_client_result
+      # Keycloak's pod can be Running/ready-for-traffic before it has actually
+      # finished its own startup (DB schema init, master realm bootstrap takes
+      # ~30s) - retry instead of failing on a transient 503 during that window
+      until: keycloak_config_kc_client_result is succeeded
+      retries: 10
+      delay: 15
+
+    # community.general.keycloak_client NEVER returns the real secret: its
+    # sanitize_cr() helper unconditionally overwrites result.end_state.secret
+    # with the literal string "no_log" before returning, regardless of any
+    # no_log setting on this task - that's the module's own hardcoded
+    # redaction, not something Ansible's no_log mechanism does. This is a
+    # deliberate, separate module (community.general.keycloak_clientsecret_info)
+    # specifically for fetching the real value via the Admin API.
+    - name: Retrieve the oauth2_proxy client secret from keycloak
+      community.general.keycloak_clientsecret_info:
+        auth_keycloak_url: "https://{{ keycloak_domain }}"
+        auth_realm: master
+        auth_username: "{{ vault_keycloak_bootstrap_admin_user }}"
+        auth_password: "{{ vault_keycloak_bootstrap_admin_password }}"
+        realm: "{{ realm_name }}"
+        client_id: oauth2-proxy
+      register: keycloak_config_kc_clientsecret_result
+
+    - name: Provide fact for oauth2_proxy client secret
+      ansible.builtin.set_fact:
+        # deliberately NOT role-prefixed - this is a cross-role contract
+        # consumed by roles/oauth2_proxy in the same play (see
+        # roles/oauth2_proxy/templates/oauth-kustomization.yaml.j2)
+        oauth2_proxy_client_secret: "{{ keycloak_config_kc_clientsecret_result.clientsecret_info.value }}"  # noqa: var-naming[no-role-prefix]

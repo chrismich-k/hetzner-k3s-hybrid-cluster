@@ -1,0 +1,105 @@
+---
+- name: Load inventory from Terraform
+  import_playbook: playbooks/00_setup_inventory.yaml
+
+- name: Upgrade debian
+  hosts: masters:agents
+  become: true
+  # the venv custom_ansible_venv creates (and group_vars/all's global
+  # ansible_python_interpreter default) doesn't exist yet at this point
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  roles:
+    - role: upgrade_debian
+
+- name: Create ansible venv
+  hosts: masters:agents
+  become: true
+  # same as above - this play is what creates the venv in the first place
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  roles:
+    - role: custom_ansible_venv
+
+- name: Set hostname on hrobot nodes
+  hosts: agents
+  become: true
+  roles:
+    - role: hrobot_hostname
+
+- name: Set ipv6_sysctl
+  hosts: masters:agents
+  become: true
+  roles:
+    - role: ipv6_sysctl
+
+- name: Configure eligible hcloud nodes as the IPv4 gateway (NAT, standby-ready)
+  hosts: masters:agents
+  become: true
+  roles:
+    - role: ipv4_gateway
+
+- name: Route affected agents' IPv4 traffic via the gateway
+  hosts: agents
+  become: true
+  roles:
+    - role: ipv4_route_via_gateway
+
+- name: Configure vSwitch VLAN interface on hrobot nodes
+  hosts: agents
+  become: true
+  roles:
+    - role: hrobot_vswitch_vlan
+
+- name: Install hetzner k3s master (bootstrap the embedded-etcd cluster)
+  hosts: masters_bootstrap
+  become: true
+  roles:
+    - role: install_k3s_master
+
+- name: Install hetzner k3s master (join remaining masters to embedded-etcd)
+  hosts: masters_join
+  become: true
+  serial: 1
+  roles:
+    - role: install_k3s_master
+
+- name: Install hetzner k3s agent
+  hosts: agents
+  become: true
+  roles:
+    - role: install_k3s_agent
+
+- name: Install Hetzner add-ons on cluster (HCCM, CSI)
+  hosts: clusters
+  become: true
+  environment:
+    KUBECONFIG: "{{ custom_kubeconfig }}"
+  module_defaults:
+    kubernetes.core.k8s:
+      kubeconfig: "{{ custom_kubeconfig }}"
+  roles:
+    - role: hetzner_k3s_hccm
+    - role: hetzner_k3s_csi
+
+- name: Install LetsEncrypt Stack on cluster
+  hosts: clusters
+  become: true
+  environment:
+    KUBECONFIG: "{{ custom_kubeconfig }}"
+  module_defaults:
+    kubernetes.core.k8s:
+      kubeconfig: "{{ custom_kubeconfig }}"
+  roles:
+    - role: cluster_letsencrypt
+
+- name: Install Cloudnative PG Operator
+  hosts: clusters
+  become: true
+  environment:
+    KUBECONFIG: "{{ custom_kubeconfig }}"
+  module_defaults:
+    kubernetes.core.k8s:
+      kubeconfig: "{{ custom_kubeconfig }}"
+  roles:
+    - role: cloudnative_pg

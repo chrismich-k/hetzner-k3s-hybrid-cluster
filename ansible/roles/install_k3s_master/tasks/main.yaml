@@ -1,0 +1,234 @@
+---
+- name: Install master nodes for Hetzner K3s hybrid cluster
+  block:
+    # prepare operating system
+    - name: Install necessary libraries and tools via apt
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gpg
+          - wget
+          - git
+          - btop
+          - iotop
+          - dnsutils
+          - net-tools
+        state: present
+        update_cache: true
+
+    # install helm via buildkite apt repository
+    - name: Import buildkite helm gpg key
+      ansible.builtin.get_url:
+        url: https://packages.buildkite.com/helm-linux/helm-debian/gpgkey
+        dest: /usr/share/keyrings/helm.asc
+        mode: "0644"
+
+    - name: Add buildkite helm apt repository
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/usr/share/keyrings/helm.asc] https://packages.buildkite.com/helm-linux/helm-debian/any/ any main"
+        state: present
+        filename: helm-stable-debian
+
+    - name: Install helm v3 (stable) via apt
+      ansible.builtin.apt:
+        name: "helm=3.*"  # don't use Helm 4
+        state: present
+        update_cache: true
+        # the buildkite repo's currently-published 3.x version can be
+        # older than whatever's already installed on a re-run (e.g. a
+        # previously-installed pre-release/newer patch) - apt refuses that
+        # as a "downgrade" without this, aborting the whole play
+        allow_downgrade: true
+
+    - name: Cleanup temporary gpg download
+      ansible.builtin.file:
+        path: /tmp/helm.gpg
+        state: absent
+
+    - name: Determine interface for ipv4_priv
+      ansible.builtin.set_fact:
+        install_k3s_master_flannel_interface: "{{ (ansible_facts | dict2items
+          | selectattr('value.ipv4.address', 'defined')
+          | selectattr('value.ipv4.address', 'equalto', ipv4_priv)
+          | map(attribute='key') | first) }}"
+
+    # Terraform's alias_ips (cluster_nodes.tf) only registers the alias IP
+    # at Hetzner's SDN/API level - the guest OS is never told about it via
+    # DHCP and needs to be configured locally via ifupdown/networkd for the
+    # node that's actually using it (the holder).
+    - name: Configure the multi-master alias IP on the private-network interface (holder only)
+      ansible.builtin.copy:
+        dest: "/etc/network/interfaces.d/{{ install_k3s_master_flannel_interface }}:1"
+        mode: "0644"
+        content: |
+          auto {{ install_k3s_master_flannel_interface }}:1
+          iface {{ install_k3s_master_flannel_interface }}:1 inet static
+            address {{ hostvars['localhost'].tf_out.k3s_master_alias_ipv4_priv.value }}
+            netmask 255.255.255.255
+      when: inventory_hostname == hostvars['localhost'].tf_out.k3s_primary_master.value
+      register: install_k3s_master_alias_ip_config
+
+    # bring down the alias IP interface before reapplying (only if config changed)
+    - name: Take the alias IP interface down before reapplying (only if config changed)
+      ansible.builtin.command:
+        cmd: "ifdown --force {{ install_k3s_master_flannel_interface }}:1"
+      when: install_k3s_master_alias_ip_config.changed
+      failed_when: false
+      changed_when: false
+
+    - name: Bring the alias IP interface up (if changed)
+      ansible.builtin.command:
+        cmd: "ifup {{ install_k3s_master_flannel_interface }}:1"
+      when: install_k3s_master_alias_ip_config.changed
+
+    # self-healing for the other direction: if k3s_primary_master
+    # moves to a different master, this one keeps its now-stale local alias
+    # config forever unless something explicitly removes it - the "holder
+    # only" task above only ever adds it, never retracts it from a former
+    # holder. Safe to re-run every time: stat is a no-op when there's
+    # nothing to clean up.
+    - name: Check for a stale alias IP config from a previous holder assignment
+      ansible.builtin.stat:
+        path: "/etc/network/interfaces.d/{{ install_k3s_master_flannel_interface }}:1"
+      register: install_k3s_master_stale_alias_ip_config
+      when: inventory_hostname != hostvars['localhost'].tf_out.k3s_primary_master.value
+
+    - name: Remove the stale alias IP interface (this master is no longer the holder)
+      when:
+        - inventory_hostname != hostvars['localhost'].tf_out.k3s_primary_master.value
+        - install_k3s_master_stale_alias_ip_config.stat.exists
+
+      # create directories for k3s
+      block:
+        - name: Take the stale alias IP interface down
+          ansible.builtin.command:
+            cmd: "ifdown --force {{ install_k3s_master_flannel_interface }}:1"
+          failed_when: false
+          changed_when: false
+
+        - name: Remove the stale alias IP interface config file
+          ansible.builtin.file:
+            path: "/etc/network/interfaces.d/{{ install_k3s_master_flannel_interface }}:1"
+            state: absent
+    - name: Create directories for k3s
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /etc/rancher/k3s
+        - /var/lib/rancher/k3s/server/manifests
+
+    # Write k3s configuration files
+    - name: Write k3s configuration files
+      ansible.builtin.copy:
+        dest: /etc/rancher/k3s/config.yaml
+        mode: "0600"
+        group: root
+        owner: root
+        content: |
+          disable-cloud-controller: true
+          kubelet-arg:
+            - "provider-id={{ 'hrobot' if provider_type == 'hrobot' else 'hcloud' }}://{{ provider_id }}"
+          # IPv4-only, matching cluster-cidr/service-cidr/cluster-dns
+
+          node-ip: "{{ ipv4_priv }}"
+          {% if inventory_hostname == hostvars['localhost'].tf_out.k3s_primary_master.value %}
+          cluster-init: true
+          {% else %}
+          server: "https://{{ hostvars['localhost'].tf_out.k3s_master_alias_ipv4_priv.value }}:6443"
+          token: "{{ hostvars[hostvars['localhost'].tf_out.k3s_primary_master.value]['master_node_token']['content'] | b64decode | trim }}"
+          {% endif %}
+          disable:
+            - servicelb
+          # tls-san covers the public ipv4/ipv6 plus the multi-master alias
+          # IP regardless of who currently holds it via Terraform config.
+          # Note that this uses to_json to render a real JSON/YAML array
+          # instead of the default Jinja repr (single-quoted) string.
+          tls-san: {{ ([ipv4 | default(none), ipv6 | default(none),
+            hostvars['localhost'].tf_out.k3s_master_alias_ipv4_priv.value] | select('string') | list) | to_json }}
+          node-label:
+            - "instance.type={{ provider_type }}"
+          {% if provider_type == 'hrobot' %}
+            - "node-purpose/infrastructure=true"
+          {% endif %}
+          {% if ingress_target %}
+            - "ingress-target=true"
+          {% endif %}
+          {% if ipv4 is defined and ipv4 is not none and ipv4 | string | trim != '' %}
+            - "node-capabilities/public-ipv4=true"
+          {% endif %}
+          {% for label_key, label_value in (node_labels | default({})).items() %}
+            - "{{ label_key }}={{ label_value }}"
+          {% endfor %}
+          cluster-cidr: "{{ k3s_cluster_cidr_ip_v4 }}"
+          service-cidr: "{{ k3s_service_cidr_ip_v4 }}"
+          cluster-dns: "{{ k3s_cluster_dns_ip_v4 }}"
+          flannel-iface: "{{ install_k3s_master_flannel_interface }}"
+          secrets-encryption: true
+      notify: Restart k3s
+
+    - name: Write traefik ingress configuration as helm chart config
+      ansible.builtin.copy:
+        dest: /var/lib/rancher/k3s/server/manifests/traefik-config.yaml
+        mode: "0644"
+        content: |
+          apiVersion: helm.cattle.io/v1
+          kind: HelmChartConfig
+          metadata:
+            name: traefik
+            namespace: kube-system
+          spec:
+            valuesContent: |
+              hostNetwork: false
+              deployment:
+                kind: DaemonSet
+              service:
+                enabled: false
+              nodeSelector:
+                ingress-target: "true"
+              ports:
+                web:
+                  hostPort: 80
+                websecure:
+                  hostPort: 443
+              # allow cross-namespace middlewares / ingress
+              providers:
+                kubernetesIngress:
+                  allowCrossNamespace: true
+                  allowExternalNameServices: true
+                kubernetesCRD:
+                  allowCrossNamespace: true
+
+    # the two-play bootstrap/join split in 01_setup_hetzner_hybrid_cluster.yaml
+    # guarantees the bootstrap master's tasks (including the node-token
+    # slurp below) fully complete before this task runs on a joining
+    # master, but not that its etcd is actually accepting connections yet -
+    # this turns a silent internal k3s retry into a fast, visible failure
+    - name: Wait for the bootstrap master's k3s API to accept connections before joining
+      ansible.builtin.wait_for:
+        host: "{{ hostvars['localhost'].tf_out.k3s_master_alias_ipv4_priv.value }}"
+        port: 6443
+        timeout: 120
+      when: inventory_hostname != hostvars['localhost'].tf_out.k3s_primary_master.value
+
+    # Start k3s installation - get_url/uri can't replace this: it's the
+    # official k3s curl-pipe-sh installer (download AND execute in one
+    # step), not a plain file download - splitting it into "download then
+    # run" would just be more code for identical behavior.
+    - name: Start k3s installation
+      ansible.builtin.shell:  # noqa: command-instead-of-module
+        cmd: >
+          curl -sfL https://get.k3s.io | sh -s - server
+          --write-kubeconfig-mode="600"
+        creates: /usr/local/bin/k3s
+
+    - name: Read node-token from master
+      ansible.builtin.slurp:
+        src: /var/lib/rancher/k3s/server/node-token
+      # deliberately NOT role-prefixed - this is a cross-host contract read
+      # via hostvars[...]['master_node_token'] by both joining masters
+      # (above) and roles/install_k3s_agent
+      register: master_node_token  # noqa: var-naming[no-role-prefix]

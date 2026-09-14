@@ -1,0 +1,92 @@
+---
+- name: Install agent nodes for Hetzner K3s hybrid cluster
+  block:
+    - name: Determine interface for ipv4_priv
+      ansible.builtin.set_fact:
+        install_k3s_agent_flannel_interface: "{{ (ansible_facts | dict2items
+          | selectattr('value.ipv4.address', 'defined')
+          | selectattr('value.ipv4.address', 'equalto', ipv4_priv)
+          | map(attribute='key') | first) }}"
+
+    - name: Create k3s agent config directory
+      ansible.builtin.file:
+        path: /etc/rancher/k3s
+        state: directory
+        mode: "0755"
+
+    # give the agent its config as a file too
+    - name: Write k3s agent config (config.yaml)
+      ansible.builtin.copy:
+        dest: /etc/rancher/k3s/config.yaml
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          # joins through the multi-master alias IP (stable regardless of
+          # which master currently holds it), not any one master's own
+          # ipv4_priv
+          server: "https://{{ hostvars['localhost'].tf_out.k3s_master_alias_ipv4_priv.value }}:6443"
+          # read from the current holder, same as install_k3s_master's own
+          # join logic - NOT groups['masters'][0] (alphabetically-first,
+          # which stays "master-01" regardless of whether that specific
+          # host is actually up). Every master ends up with an identical,
+          # valid node-token, so any reachable one would technically do,
+          # but the holder is the one guaranteed to have actually run in
+          # this play (an unreachable/down master, e.g. during a holder
+          # failover test, never gets its master_node_token fact
+          # registered at all in that run, which breaks the
+          # groups['masters'][0] idiom the moment that specific host isn't
+          # up)
+          token: "{{ hostvars[hostvars['localhost'].tf_out.k3s_primary_master.value]['master_node_token']['content'] | b64decode | trim }}"
+          # only the private IPv4 here: Hetzner's private Cloud Network has no
+          # real (non-link-local) IPv6 - see install_k3s_master for details.
+          node-ip: "{{ ipv4_priv }}"
+          kubelet-arg:
+            - "provider-id={{ 'hrobot' if provider_type == 'hrobot' else 'hcloud' }}://{{ provider_id }}"
+          node-label:
+            - "instance.type={{ provider_type }}"
+          {% if provider_type == 'hrobot' %}
+            - "node-purpose/infrastructure=true"
+          {% endif %}
+          {% if ingress_target %}
+            - "ingress-target=true"
+          {% endif %}
+          {% if ipv4 is defined and ipv4 is not none and ipv4 | string | trim != '' %}
+            - "node-capabilities/public-ipv4=true"
+          {% endif %}
+          {% for label_key, label_value in (node_labels | default({})).items() %}
+            - "{{ label_key }}={{ label_value }}"
+          {% endfor %}
+          flannel-iface: "{{ install_k3s_agent_flannel_interface }}"
+      notify: Restart k3s-agent
+
+    - name: Write static resolv.conf for k3s (IPv4 nameservers only)
+      ansible.builtin.copy:
+        dest: /etc/rancher/k3s/resolv.conf
+        content: |
+          {% for ns in k3s_resolv_conf_nameservers %}
+          nameserver {{ ns }}
+          {% endfor %}
+        mode: "0644"
+      notify:
+        - Restart k3s-agent
+        - Restart coredns pods
+
+    - name: Add resolv-conf entry to k3s config.yaml
+      ansible.builtin.lineinfile:
+        path: /etc/rancher/k3s/config.yaml
+        regexp: "^resolv-conf:"
+        line: "resolv-conf: /etc/rancher/k3s/resolv.conf"
+        create: true
+      notify:
+        - Restart k3s-agent
+        - Restart coredns pods
+
+    # get_url/uri can't replace this: it's the official k3s curl-pipe-sh
+    # installer (download AND execute in one step), not a plain file
+    # download - splitting it into "download then run" would just be more
+    # code for identical behavior.
+    - name: Install and start k3s agent service
+      ansible.builtin.shell:  # noqa: command-instead-of-module
+        cmd: "curl -sfL https://get.k3s.io | sh -s - agent"
+        creates: /usr/local/bin/k3s-agent

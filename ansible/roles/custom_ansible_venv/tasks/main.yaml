@@ -1,0 +1,20 @@
+---
+- name: Install venv for ansible
+  block:
+    - name: Install python3-pip and python3-venv via apt
+      apt:
+        name:
+          - python3-pip
+          - python3-venv
+        state: present
+        update_cache: true
+
+    - name: Create isolated venv for ansible
+      pip:
+        name:
+          - PyYAML
+          - kubernetes
+          - jsonpatch
+        state: present
+        virtualenv: "{{ custom_ansible_venv_path }}"
+        virtualenv_command: python3 -m venv

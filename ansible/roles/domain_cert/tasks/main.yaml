@@ -1,0 +1,185 @@
+---
+# Reusable TLS provisioning for a single domain: non-fatal DNS pre-check
+# (A/AAAA vs the actual ingress-target node addresses) + explicit
+# cert-manager Certificate + wait for the resulting Secret.
+#
+# Required vars (set via this role's include_role `vars:`, all role-prefixed
+# per ansible-lint's var-naming[no-role-prefix]):
+#   domain_cert_domain         - the FQDN to request a certificate for
+#   domain_cert_cert_name      - name of the cert-manager Certificate resource
+#   domain_cert_secret_name    - name of the resulting TLS Secret (must match
+#                                what the caller's own IngressRoute references)
+#   domain_cert_cert_namespace - namespace for the Certificate/Secret - must
+#                                match the namespace the caller's IngressRoute
+#                                lives in. Not "domain_cert_namespace" - avoids
+#                                even the prefixed form shadowing Jinja2's
+#                                built-in namespace() function.
+# Optional:
+#   domain_cert_issuer_name    - ClusterIssuer to use (default:
+#                                letsencrypt-prod, see defaults/main.yaml)
+
+- name: Gather ingress-target node addresses (expected DNS targets) for {{ domain_cert_domain }}
+  ansible.builtin.set_fact:
+    domain_cert_ingress_ipv4: >-
+      {{ (groups['masters'] + groups['agents'])
+         | map('extract', hostvars)
+         | selectattr('ingress_target')
+         | map(attribute='ipv4')
+         | select('string') | list }}
+    domain_cert_ingress_ipv6: >-
+      {{ (groups['masters'] + groups['agents'])
+         | map('extract', hostvars)
+         | selectattr('ingress_target')
+         | map(attribute='ipv6')
+         | select('string') | list }}
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Resolve A record(s) (non-fatal) for {{ domain_cert_domain }}
+  ansible.builtin.command: "getent ahostsv4 {{ domain_cert_domain }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: domain_cert_dns_a
+  changed_when: false
+  failed_when: false
+
+- name: Resolve AAAA record(s) (non-fatal) for {{ domain_cert_domain }}
+  ansible.builtin.command: "getent ahostsv6 {{ domain_cert_domain }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: domain_cert_dns_aaaa
+  changed_when: false
+  failed_when: false
+
+# "getent ahostsv4/v6" repeats each address once per socket type
+# (STREAM/DGRAM/RAW) - dedupe down to the first column before comparing.
+- name: Extract resolved addresses for {{ domain_cert_domain }}
+  ansible.builtin.set_fact:
+    domain_cert_resolved_ipv4: >-
+      {{ domain_cert_dns_a.stdout_lines
+         | map('regex_replace', '^(\S+).*$', '\1') | unique | list
+         if domain_cert_dns_a.rc == 0 else [] }}
+    domain_cert_resolved_ipv6: >-
+      {{ domain_cert_dns_aaaa.stdout_lines
+         | map('regex_replace', '^(\S+).*$', '\1') | unique | list
+         if domain_cert_dns_aaaa.rc == 0 else [] }}
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Warn if there is no DNS resolution at all for {{ domain_cert_domain }}
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: "{{ domain_cert_domain }}" does not currently resolve (neither A nor
+      AAAA) from the Ansible control machine. This may just be DNS
+      propagation delay, or a resolver/hosts-file override local to this
+      machine - but if the certificate request below hangs or fails,
+      check DNS first.
+  when: domain_cert_resolved_ipv4 | length == 0 and domain_cert_resolved_ipv6 | length == 0
+  run_once: true
+
+# Split into three parts per family, always shown (not just on mismatch):
+#  1. which configured ingress-target IPs DNS currently resolves to
+#  2. which configured ingress-target IPs DNS does NOT currently resolve to
+#     (not inherently a problem - a domain need not point at every eligible
+#     ingress node)
+#  3. which resolved addresses do NOT belong to any ingress-target node -
+#     this is the one that actually matters for the warning below
+- name: Classify the A record against the ingress-target nodes for {{ domain_cert_domain }}
+  ansible.builtin.set_fact:
+    domain_cert_ingress_ipv4_found: "{{ domain_cert_ingress_ipv4 | select('in', domain_cert_resolved_ipv4) | list }}"
+    domain_cert_ingress_ipv4_missing: "{{ domain_cert_ingress_ipv4 | reject('in', domain_cert_resolved_ipv4) | list }}"
+    domain_cert_unexpected_ipv4: "{{ domain_cert_resolved_ipv4 | reject('in', domain_cert_ingress_ipv4) | list }}"
+    domain_cert_ingress_ipv6_found: "{{ domain_cert_ingress_ipv6 | select('in', domain_cert_resolved_ipv6) | list }}"
+    domain_cert_ingress_ipv6_missing: "{{ domain_cert_ingress_ipv6 | reject('in', domain_cert_resolved_ipv6) | list }}"
+    domain_cert_unexpected_ipv6: "{{ domain_cert_resolved_ipv6 | reject('in', domain_cert_ingress_ipv6) | list }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Report the A record vs. the configured ingress-target nodes for {{ domain_cert_domain }}
+  ansible.builtin.debug:
+    msg:
+      - "Configured ingress-target IPv4 addresses: {{ domain_cert_ingress_ipv4 }}"
+      - "  - currently resolving for {{ domain_cert_domain }} (A): {{ domain_cert_ingress_ipv4_found }}"
+      - "  - NOT currently resolving for {{ domain_cert_domain }}: {{ domain_cert_ingress_ipv4_missing }}"
+      - "Resolved (A) address(es) not belonging to any ingress-target node: {{ domain_cert_unexpected_ipv4 }}"
+  run_once: true
+
+# A resolved address outside the ingress-target set is the exact failure
+# mode this check exists for - but it's not unconditionally wrong: a load
+# balancer or reverse proxy in front of the ingress nodes is a legitimate
+# reason for this, and the ingress nodes may still need this very
+# certificate for the load balancer/proxy's own backend TLS connection
+# (e.g. a Hetzner Load Balancer in TCP-passthrough mode, or Cloudflare's
+# "Full (strict)" mode) - so this stays a warning, never a hard failure.
+- name: Warn if the A record includes an address outside the ingress-target nodes for {{ domain_cert_domain }}
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: "{{ domain_cert_domain }}" resolves (A) to address(es) not matching any
+      ingress-target node: {{ domain_cert_unexpected_ipv4 }}. This may be a
+      DNS misconfiguration, or expected if a load balancer/reverse proxy
+      sits in front of the ingress nodes - in which case the ingress nodes
+      may still need this certificate for the load balancer/proxy's own
+      backend connection.
+  when: domain_cert_unexpected_ipv4 | length > 0
+  run_once: true
+
+- name: Report the AAAA record vs. the configured ingress-target nodes for {{ domain_cert_domain }}
+  ansible.builtin.debug:
+    msg:
+      - "Configured ingress-target IPv6 addresses: {{ domain_cert_ingress_ipv6 }}"
+      - "  - currently resolving for {{ domain_cert_domain }} (AAAA): {{ domain_cert_ingress_ipv6_found }}"
+      - "  - NOT currently resolving for {{ domain_cert_domain }}: {{ domain_cert_ingress_ipv6_missing }}"
+      - "Resolved (AAAA) address(es) not belonging to any ingress-target node: {{ domain_cert_unexpected_ipv6 }}"
+  run_once: true
+
+# Equally critical, not just a "nice to have IPv6" check: Let's Encrypt
+# prefers AAAA over A whenever both exist, and does NOT fall back to IPv4
+# if the IPv6 connection fails - so a stale/wrong AAAA record breaks
+# issuance even when the A record is perfectly correct.
+- name: Warn if the AAAA record includes an address outside the ingress-target nodes for {{ domain_cert_domain }}
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: "{{ domain_cert_domain }}" resolves (AAAA) to address(es) not matching
+      any ingress-target node: {{ domain_cert_unexpected_ipv6 }}. Let's
+      Encrypt prefers AAAA when present and does NOT fall back to IPv4, so
+      this matters even if the A record above is correct. This may be a
+      DNS misconfiguration, or expected if a load balancer/reverse proxy
+      sits in front of the ingress nodes - in which case the ingress nodes
+      may still need this certificate for the load balancer/proxy's own
+      backend connection.
+  when: domain_cert_unexpected_ipv6 | length > 0
+  run_once: true
+
+- name: Explicitly request TLS certificate via cert-manager for {{ domain_cert_domain }}
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: "{{ domain_cert_cert_name }}"
+        namespace: "{{ domain_cert_cert_namespace }}"
+      spec:
+        secretName: "{{ domain_cert_secret_name }}"
+        issuerRef:
+          name: "{{ domain_cert_issuer_name }}"
+          kind: ClusterIssuer
+        dnsNames:
+          - "{{ domain_cert_domain }}"
+
+- name: Wait for Let's Encrypt to create the secret {{ domain_cert_secret_name }}
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: "{{ domain_cert_secret_name }}"
+    namespace: "{{ domain_cert_cert_namespace }}"
+  register: domain_cert_wait_tls_secret
+  # "is defined" handles the case where the secret doesn't exist yet on the first try
+  until: domain_cert_wait_tls_secret.resources is defined and domain_cert_wait_tls_secret.resources | length > 0
+  retries: 30
+  delay: 10

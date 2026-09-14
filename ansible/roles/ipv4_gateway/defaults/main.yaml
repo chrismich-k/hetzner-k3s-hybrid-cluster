@@ -1,0 +1,6 @@
+---
+# sourced from terraform/variables.tf's ip_range_sub_hcloud via the
+# ip_range_sub_hcloud terraform output (playbooks/00_setup_inventory.yaml's
+# tf_out fact on localhost) - this is the only subnet routed through this
+# gateway
+ipv4_gateway_source_cidr: "{{ hostvars['localhost'].tf_out.ip_range_sub_hcloud.value }}"

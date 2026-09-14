@@ -1,0 +1,11 @@
+---
+# sourced from terraform (terraform/output.tf) via
+# playbooks/00_setup_inventory.yaml's tf_out fact on localhost.
+hrobot_vswitch_vlan_vswitch_subnet_prefix_len: "{{ hostvars['localhost'].tf_out.vswitch_subnet_prefix_len.value }}"
+hrobot_vswitch_vlan_hetzner_private_network_cidr: "{{ hostvars['localhost'].tf_out.ip_range_net_private.value }}"
+
+# The vSwitch-attached side of a Hetzner Cloud Network has its OWN local
+# gateway - the first usable address of ip_range_sub_vswitch itself.
+# Computed in terraform via cidrhost(ip_range_sub_vswitch, 1).
+hrobot_vswitch_vlan_hetzner_vswitch_gateway_ip: "{{ hostvars['localhost'].tf_out.hetzner_vswitch_gateway_ip.value }}"
+hrobot_vswitch_vlan_vswitch_iface_mtu: 1400

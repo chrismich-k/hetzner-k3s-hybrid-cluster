@@ -1,0 +1,14 @@
+---
+- name: Load inventory from Terraform
+  import_playbook: playbooks/00_setup_inventory.yaml
+
+- name: Install monitoring stack (Prometheus, Grafana, Alertmanager)
+  hosts: clusters
+  become: true
+  environment:
+    KUBECONFIG: "{{ custom_kubeconfig }}"
+  module_defaults:
+    kubernetes.core.k8s:
+      kubeconfig: "{{ custom_kubeconfig }}"
+  roles:
+    - role: kube_prometheus_stack

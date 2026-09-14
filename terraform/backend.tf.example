@@ -1,0 +1,40 @@
+# Sample configuration for Terraform's remote state backend.
+#
+# This is entirely OPTIONAL. If you don't create a "backend.tf" file at
+# all, Terraform just uses local state (a "terraform.tfstate" file in this
+# directory, already covered by .gitignore) - simpler for a single-operator
+# setup, no bucket to provision first.
+#
+# Either way, keep in mind Terraform state always contains sensitive data
+# in plaintext, regardless of backend - e.g. this project's sensitive
+# `hcloud_token`/`hrobot_api_user`/`hrobot_api_pass` outputs (see
+# terraform/output.tf), node private IPs, and anything else Terraform
+# manages. With local state, that plaintext just lives on this machine's
+# disk instead of a remote bucket - fine, but treat terraform.tfstate (and
+# any backups of this directory) like any other credentials file.
+#
+# To opt in to a remote (S3-compatible) backend instead:
+#   cp backend.tf.example backend.tf   # then edit the placeholders below
+# You'll also need a "backend.tfvars" file here (gitignored, no template
+# provided since it holds live credentials) with the actual access
+# key/secret. Then initialize with:
+#   terraform init -backend-config=backend.tfvars
+
+terraform {
+  backend "s3" {
+    bucket = "<PROJECTNAME>-k3s-tfstate" # any bucket you've already created
+    key    = "dev/terraform.tfstate"     # path/filename within the bucket
+    region = "main"                      # Hetzner Object Storage ignores
+                                          # the actual value, but Terraform
+                                          # requires the argument to be set
+
+    # Hetzner Object Storage is S3-compatible but not AWS S3 itself - these
+    # flags are required for Terraform's S3 backend to work against it,
+    # keep them as-is
+    skip_credentials_validation = true
+    skip_metadata_api_check     = true
+    skip_region_validation      = true
+    skip_requesting_account_id  = true
+    use_path_style              = true
+  }
+}

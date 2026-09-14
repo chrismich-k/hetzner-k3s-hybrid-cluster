@@ -1,0 +1,40 @@
+---
+- name: Configure this node as the IPv4 gateway for public-v4-less hcloud agents
+  # prepares every hcloud node with a public IPv4 to be a gateway,
+  # actual gateway used will be set by Terraform for Hetzner's Cloud Network
+  when: provider_type == 'hcloud' and (ipv4 | default('', true) | trim != '')
+  block:
+    - name: Enable IPv4 forwarding
+      ansible.posix.sysctl:
+        name: net.ipv4.ip_forward
+        value: "1"
+        sysctl_file: /etc/sysctl.d/99-ipv4_gateway.conf
+        sysctl_set: true
+        reload: true
+
+    # avoids the interactive "save current rules?" debconf prompt on install
+    - name: Pre-seed iptables-persistent to skip its interactive save prompts
+      ansible.builtin.debconf:
+        name: iptables-persistent
+        question: "{{ item }}"
+        value: "false"
+        vtype: boolean
+      loop:
+        - iptables-persistent/autosave_v4
+        - iptables-persistent/autosave_v6
+
+    - name: Install iptables-persistent (to survive reboots)
+      ansible.builtin.apt:
+        name: iptables-persistent
+        state: present
+        update_cache: true
+
+    - name: Masquerade outbound IPv4 traffic from the hcloud private subnet
+      ansible.builtin.iptables:
+        table: nat
+        chain: POSTROUTING
+        source: "{{ ipv4_gateway_source_cidr }}"
+        out_interface: "{{ ansible_default_ipv4.interface }}"
+        jump: MASQUERADE
+        comment: "ipv4_gateway: NAT for hcloud agents without public IPv4"
+      notify: Persist iptables rules

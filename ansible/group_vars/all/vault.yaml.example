@@ -1,0 +1,60 @@
+---
+# Sample secrets for this cluster.
+# Copy this file to vault.yaml (this exact path) and/or host_vars/<host>/vault.yaml
+# for per-host overrides, fill in real values, then encrypt it in place:
+#   ansible-vault encrypt group_vars/all/vault.yaml
+# The encrypted file is fine to commit; the vault password itself must
+# never be committed - keep it outside the repo (e.g. referenced via
+# ansible.cfg's vault_password_file) or pass it with --vault-id.
+#
+# NOT here: the Hetzner API credentials Terraform also needs (hcloud_token,
+# hrobot_api_user, hrobot_api_pass) live only in terraform.tfvars and are
+# read from `terraform output -json` at runtime - don't duplicate them into
+# this file, they'd just be dead/conflicting copies. See prerequisites
+# in the root README.md.
+
+# Keycloak bootstrap admin (roles/keycloak_config authenticates against
+# Keycloak's built-in "master" realm with this user/password to create the
+# "ktest" realm and the oauth2_proxy client inside it) - must match whatever
+# admin credentials the Keycloak CR (roles/keycloak_operator) bootstraps the
+# instance with.
+vault_keycloak_bootstrap_admin_user: "admin"
+vault_keycloak_bootstrap_admin_password: "securepassword"
+
+# oauth2_proxy cookie-signing secret (roles/oauth2_proxy,
+# OAUTH2_PROXY_COOKIE_SECRET) - encrypts/signs the session cookie, separate
+# from the OIDC client secret below. Must be 16, 24, or 32 raw bytes (for
+# AES-128/192/256) - generate one with:
+#   openssl rand -base64 32
+# Don't just type an arbitrary password here like the others in this file -
+# the byte length matters and oauth2_proxy will refuse to start otherwise.
+vault_oauth_cookie_secret: "<32 random bytes, e.g. from: openssl rand -base64 32>"
+
+# Note: there is no "vault_oauth_client_secret" variable. The oauth2_proxy
+# *client* secret (as opposed to the cookie secret above) is not stored in
+# vault at all - roles/keycloak_config creates the Keycloak client and
+# fetches its generated secret live from the Keycloak admin API
+# (community.general.keycloak_clientsecret_info) every run, then passes it
+# to roles/oauth2_proxy in-memory as the oauth2_proxy_client_secret fact.
+
+# Grafana local admin account (roles/kube_prometheus_stack) - a break-glass
+# login that stays available alongside the primary Keycloak-SSO login.
+# Required before running 03_setup_monitoring.yaml for the first time.
+vault_grafana_admin_password: "securepassword"
+
+# ArgoCD local admin account (roles/argocd) - a break-glass login that
+# stays available alongside the primary Keycloak-SSO login, same pattern
+# as vault_grafana_admin_password above. Required before running
+# 04_setup_argocd.yaml for the first time. roles/argocd bcrypt-hashes this
+# itself (ArgoCD expects a bcrypt hash, not the plaintext, in its secret) -
+# just put the plain password here like the others in this file.
+vault_argocd_admin_password: "securepassword"
+
+# --- Reserved for future use ---
+# GitOps repo credentials/registry token. roles/argocd installs ArgoCD
+# itself (Helm chart, Keycloak SSO, ingress) but does not yet create a
+# GitOps Application or a repository-credentials Secret, so this variable
+# isn't read anywhere yet. Kept here, already in the expected shape, for
+# when that gets wired up - see the matching github_repo_url/
+# github_repo_branch reservation in group_vars/all/vars.yaml.
+vault_github_registry_token: "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"

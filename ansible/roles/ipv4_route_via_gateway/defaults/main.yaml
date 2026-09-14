@@ -1,0 +1,19 @@
+---
+# Hetzner Cloud Networks are routed, not bridged: each member's private
+# interface only gets a /32 host address (no broadcast subnet), and there is
+# no direct L2/ARP reachability between members' private IPs. Hetzner's own
+# DHCP already announces the real next-hop for the whole private CIDR (see
+# `ip route show` on any node: "<private_cidr> via <this ip> dev <iface>
+# proto dhcp", plus a proper on-link host route for that IP). It's the first
+# usable address of terraform/variables.tf's ip_range_net_private (default
+# 10.0.0.0/16) - sourced from the hetzner_private_network_gateway_ip
+# terraform output (computed there via cidrhost(), see terraform/output.tf)
+# through playbooks/00_setup_inventory.yaml's tf_out fact on localhost,
+# instead of hardcoded here, so it always tracks ip_range_net_private.
+#
+# Our own Terraform-managed hcloud_network_route (0.0.0.0/0 -> the
+# ipv4_gateway host's ipv4_priv, see terraform/network.tf) is what makes
+# Hetzner's virtual router actually forward everything else on to that host.
+# Nodes must never route to the ipv4_gateway host's private IP directly -
+# it's not reachable that way.
+ipv4_route_via_gateway_hetzner_private_network_gateway_ip: "{{ hostvars['localhost'].tf_out.hetzner_private_network_gateway_ip.value }}"

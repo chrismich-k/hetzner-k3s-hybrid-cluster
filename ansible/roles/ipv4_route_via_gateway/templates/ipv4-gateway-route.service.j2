@@ -1,0 +1,12 @@
+[Unit]
+Description=IPv4 default route via Hetzner's private-network router ({{ ipv4_route_via_gateway_hetzner_private_network_gateway_ip }})
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/ip -4 route replace default via {{ ipv4_route_via_gateway_hetzner_private_network_gateway_ip }} dev {{ ipv4_route_via_gateway_ipv4_gateway_route_iface }}
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

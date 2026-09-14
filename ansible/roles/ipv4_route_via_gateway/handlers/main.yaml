@@ -1,0 +1,6 @@
+---
+- name: Restart ipv4-gateway-route service
+  ansible.builtin.systemd:
+    name: ipv4-gateway-route.service
+    daemon_reload: true
+    state: restarted

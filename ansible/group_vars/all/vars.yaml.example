@@ -1,0 +1,141 @@
+---
+# Non-secret cluster/add-on configuration, shared by every playbook (01-04).
+# This repo is a fork-able base/demo repository - copy this file to
+# vars.yaml (this exact path) and fill in your own values, the same way
+# terraform.tfvars.example/vault.yaml.example work. It's deliberately NOT
+# gitignored, so a real, concrete deployment built on top of this base is
+# free to commit its own vars.yaml if it wants to (matching how
+# vault.yaml's encrypted contents are meant to be committed too) - this
+# base repo just doesn't commit one itself. Anything secret (passwords,
+# tokens, cookie/client secrets) belongs in the ansible-vault-encrypted
+# vault.yaml instead - see vault.yaml.example.
+
+# --- paths ---
+
+# venv created by roles/custom_ansible_venv (Ansible modules that talk to
+# Kubernetes/Helm run through this interpreter, not the system python)
+custom_ansible_venv_path: "/opt/ansible_venv"
+custom_ansible_python_interpreter: "{{ custom_ansible_venv_path }}/bin/python"
+# k3s's own kubeconfig on every node, used by every play whose tasks talk
+# to the cluster API (KUBECONFIG env / kubernetes.core.k8s module default)
+custom_kubeconfig: "/etc/rancher/k3s/k3s.yaml"
+
+# applies to every task by default, so individual roles no longer need to set
+# this themselves - the only two exceptions (roles/upgrade_debian and
+# roles/custom_ansible_venv) run *before* the venv above exists yet, and
+# explicitly override this back to the system python for their own tasks
+ansible_python_interpreter: "{{ custom_ansible_python_interpreter }}"
+
+# --- ingress ---
+
+# namespace Traefik (k3s's bundled ingress controller) runs in
+traefik_namespace: "kube-system"
+
+# base domain for the cluster. This (and every "*_domain" below, which are
+# all subdomains of it) needs a DNS A/AAAA record pointing at whichever
+# node(s) have ingress_target = true in terraform.tfvars, since Traefik's
+# hostPort DaemonSet and cert-manager's HTTP-01 challenges both listen there
+cluster_domain: "<CLUSTER_DOMAIN>" # eg "example.com"
+
+# --- k3s cluster/service networking (IPv4-only, deliberately not
+# dual-stack) ---
+# Hetzner's private Cloud Network has no real (non-link-local) IPv6, and
+# k3s requires node-ip and cluster-cidr to share the same IP family. This
+# only affects pod-to-pod/ClusterIP traffic - public IPv6 ingress reachability
+# is untouched (Traefik binds hostPort directly on the node's real interfaces).
+k3s_cluster_cidr_ip_v4: "10.42.0.0/16"
+k3s_service_cidr_ip_v4: "10.43.0.0/16"
+k3s_cluster_dns_ip_v4: "10.43.0.10"
+
+# upstream resolvers written into every node's /etc/resolv.conf
+# (roles/install_k3s_agent) - Hetzner's own resolver, then two public
+# fallbacks
+k3s_resolv_conf_nameservers:
+  - 185.12.64.1
+  - 9.9.9.9
+  - 8.8.8.8
+
+# contact address used for Let's Encrypt's ACME account
+# (roles/cluster_letsencrypt ClusterIssuer) - expiry/problem notifications
+# go here, it does not need to be reachable by anything in the cluster
+admin_email: "<ADMIN_EMAIL>" # eg "admin@example.com"
+
+# name of the private Hetzner Cloud Network - must match terraform.tfvars'
+# hetzner_network_name (same placeholder there too) - roles/hetzner_k3s_hccm
+# uses this to let HCCM find the right Network object via the Hetzner API
+hetzner_network_name: "<NETWORK_NAME>"
+
+# --- Postgres (ansible/25_demo_database.yaml, optional example) ---
+# CloudNativePG Cluster CR name, and the one demo database/owner role
+# created inside it - pinned to whichever node(s) carry
+# node-purpose/infrastructure=true. Not used by roles/cloudnative_pg
+# itself (that role only installs the CNPG operator) or by anything else
+# in this repo - roles/keycloak_operator provisions its own, separate
+# CNPG Cluster for Keycloak's own database.
+pg_cluster_name: "postgres-cluster"
+demo_app_db: "app_db"
+demo_app_user: "app_user"
+
+# --- Keycloak (roles/keycloak_operator, roles/keycloak_config) ---
+
+# tag of github.com/keycloak/keycloak-k8s-resources to install the operator
+# CRDs/manifests from
+keycloak_version: "26.7.0"
+# where the Keycloak admin console/API itself is exposed
+keycloak_domain: "keycloak.{{ cluster_domain }}"
+# where oauth2_proxy's own endpoints (login redirect, /oauth2/callback) are
+# exposed - deliberately a different subdomain from keycloak_domain
+auth_domain: "auth.{{ cluster_domain }}"
+
+# --- oauth2_proxy (roles/oauth2_proxy) ---
+
+# Keycloak realm created by roles/keycloak_config and used by every OIDC
+# client below (oauth2_proxy, Grafana, ...)
+realm_name: "ktest"
+oauth_oidc_issuer_url: "https://{{ keycloak_domain }}/realms/{{ realm_name }}"
+oauth_provider: "oidc"
+# Keycloak client id for oauth2_proxy itself - the matching client secret
+# is not stored here, see vault.yaml.example
+oauth_client_id: "oauth2-proxy"
+
+# --- sample web app protected behind oauth2_proxy ---
+# no playbook actually deploys this app (yet) - it only defines where
+# oauth2_proxy sends users after a successful login
+# (OAUTH2_PROXY_DEFAULT_REDIRECT_URL)
+app_domain: "test-service.{{ cluster_domain }}"
+
+# --- ArgoCD (roles/argocd, 04_setup_argocd.yaml) ---
+argo_domain: "argo.{{ cluster_domain }}"
+# Keycloak *client* id registered for ArgoCD's own OIDC login (separate
+# from oauth_client_id/grafana_client_id - each app gets its own client)
+argocd_client_id: "argocd"
+# Simple (email-based) RBAC: this Keycloak login email is mapped straight
+# to ArgoCD's built-in role:admin in roles/argocd's policy.csv - no
+# Keycloak groups involved. Must be set to a real email a user will
+# actually log in with via Keycloak SSO.
+argocd_sso_admin_email: "<your-keycloak-login-email>"
+
+# --- Reserved for future use ---
+# GitOps repo for ArgoCD to track. roles/argocd installs ArgoCD itself
+# (Helm chart, Keycloak SSO, ingress) but does not yet create an
+# Application CR pointing at a repo, so neither variable is read anywhere
+# yet. Kept here, already in the expected shape, for when that gets wired
+# up - see the matching vault_github_registry_token reservation in
+# vault.yaml.example (for a private repo/registry).
+github_repo_url: "https://github.com/<YOUR_GITHUB_USER>/<YOUR_GITOPS_REPO>.git"
+github_repo_branch: "main"
+
+# --- monitoring: Prometheus / Grafana / Alertmanager
+# (roles/kube_prometheus_stack, 03_setup_monitoring.yaml) ---
+monitoring_namespace: "monitoring"
+# where Grafana itself is exposed
+grafana_domain: "grafana.{{ cluster_domain }}"
+# Keycloak *client* id registered for Grafana's own OIDC login (separate
+# from oauth_client_id/realm_name's oauth2-proxy client) - also the client
+# the "editor"/"admin" Keycloak client roles get created on
+grafana_client_id: "grafana"
+prometheus_retention: "14d"
+# storage sizes for the local-path PVCs backing Prometheus/Alertmanager -
+# tune upward if Prometheus starts OOMKilling under real scrape cardinality,
+prometheus_storage_size: "20Gi"
+alertmanager_storage_size: "2Gi"

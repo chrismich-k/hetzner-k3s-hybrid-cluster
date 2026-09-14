@@ -1,0 +1,73 @@
+---
+# Example: a standalone Postgres database on top of the shared CNPG
+# operator installed by 01_setup_hetzner_hybrid_cluster.yaml. Not part of
+# any specific application - just a ready-to-use database, pinned to
+# whichever node(s) carry node-purpose/infrastructure=true
+
+- name: Load inventory from Terraform
+  import_playbook: playbooks/00_setup_inventory.yaml
+
+- name: Create an example Postgres database (CloudNativePG)
+  hosts: clusters
+  become: true
+  environment:
+    KUBECONFIG: "{{ custom_kubeconfig }}"
+  module_defaults:
+    kubernetes.core.k8s:
+      kubeconfig: "{{ custom_kubeconfig }}"
+  tasks:
+    - name: Create database namespace
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: database
+        state: present
+
+    - name: Create CloudNative-PG Postgres cluster
+      kubernetes.core.k8s:
+        state: present
+        apply: true
+        definition:
+          apiVersion: postgresql.cnpg.io/v1
+          kind: Cluster
+          metadata:
+            name: "{{ pg_cluster_name }}"
+            namespace: database
+          spec:
+            instances: 1
+
+            # pin to infrastructure-labeled node(s) - node-purpose/infrastructure
+            # is auto-applied to every hrobot node, or can be added manually via
+            # cluster_nodes[...].node_labels on an hcloud node
+            affinity:
+              nodeSelector:
+                "node-purpose/infrastructure": "true"
+              tolerations:
+                - key: "node.kubernetes.io/network-unavailable"
+                  operator: "Exists"
+                  effect: "NoSchedule"
+
+            storage:
+              size: 25Gi
+              storageClass: local-path
+
+            bootstrap:
+              initdb:
+                database: "{{ demo_app_db }}"
+                owner: "{{ demo_app_user }}"
+                # example extension - remove or replace with whatever your
+                # actual application needs
+                postInitApplicationSQL:
+                  - CREATE EXTENSION IF NOT EXISTS ltree;
+
+            failoverDelay: 300
+
+            # size for a small example workload - tune to whatever your
+            # actual application needs before relying on this for real
+            resources:
+              requests:
+                memory: "4Gi"
+                cpu: "1"
+              limits:
+                memory: "4Gi"
+                cpu: "1"

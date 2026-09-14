@@ -1,0 +1,15 @@
+---
+- name: Install CloudNativePG operator
+  block:
+    - name: Add CloudNative-PG Helm repository
+      kubernetes.core.helm_repository:
+        name: cnpg
+        repo_url: "https://cloudnative-pg.github.io/charts"
+
+    - name: Install CloudNative-PG operator via Helm
+      kubernetes.core.helm:
+        name: cnpg
+        chart_ref: cnpg/cloudnative-pg
+        release_namespace: cnpg-system
+        create_namespace: true
+        wait: true

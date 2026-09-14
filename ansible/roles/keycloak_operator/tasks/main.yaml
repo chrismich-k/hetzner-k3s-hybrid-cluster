@@ -1,0 +1,147 @@
+---
+- name: Keycloak Deployment
+  block:
+    - name: Create namespace for Keycloak operator
+      kubernetes.core.k8s:
+        name: keycloak
+        kind: Namespace
+        state: present
+
+    - name: Apply Keycloak operator via kubectl apply -k on the node
+      ansible.builtin.command:
+        cmd: "kubectl apply -k 'github.com/keycloak/keycloak-k8s-resources/kubernetes?ref={{ keycloak_version }}' -n keycloak"
+      register: keycloak_operator_kustomize_result
+      changed_when: "'created' in keycloak_operator_kustomize_result.stdout or 'configured' in keycloak_operator_kustomize_result.stdout"
+
+    - name: Create static Keycloak admin secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: my-static-admin-secret
+            namespace: keycloak
+          type: Opaque
+          stringData:
+            # set your desired admin credentials here (no manual base64 needed)
+            username: "{{ vault_keycloak_bootstrap_admin_user }}"
+            password: "{{ vault_keycloak_bootstrap_admin_password }}"
+
+    # DB for keycloak
+    - name: Create CloudNativePG Postgres instance for Keycloak
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: postgresql.cnpg.io/v1
+          kind: Cluster
+          metadata:
+            name: keycloak-db
+            namespace: keycloak
+          spec:
+            # single-instance cluster for minimal resources and isolation
+            instances: 1
+
+            # officially supported Postgres version for Keycloak
+            imageName: ghcr.io/cloudnative-pg/postgresql:16.2
+
+            # storage config for the DB
+            storage:
+              size: 10Gi
+              # replace 'local-path' with your actual StorageClass on the robot cluster (e.g. rook-ceph, local-path, etc.)
+              storageClass: "local-path"
+
+            # local-path volumes are bound to their node - pin to the infrastructure
+            # node (hrobot), instead of landing on an ephemeral hcloud agent at random
+            affinity:
+              nodeSelector:
+                "node-purpose/infrastructure": "true"
+              tolerations:
+                - key: "node.kubernetes.io/network-unavailable"
+                  operator: "Exists"
+                  effect: "NoSchedule"
+
+            # define the app database and user here
+            bootstrap:
+              initdb:
+                database: keycloak
+                owner: keycloak
+
+    - name: Create Traefik ServersTransport for Keycloak
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: traefik.io/v1alpha1
+          kind: ServersTransport
+          metadata:
+            name: keycloak-transport
+            namespace: keycloak
+          spec:
+            insecureSkipVerify: true
+
+    - name: Create Keycloak instance (without operator ingress)
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: k8s.keycloak.org/v2beta1
+          kind: Keycloak
+          metadata:
+            name: main-keycloak
+            namespace: keycloak
+          spec:
+            instances: 1
+            hostname:
+              hostname: "{{ keycloak_domain }}"
+            db:
+              vendor: postgres
+              host: keycloak-db-rw.keycloak.svc.cluster.local
+              database: keycloak
+              usernameSecret:
+                name: keycloak-db-app
+                key: username
+              passwordSecret:
+                name: keycloak-db-app
+                key: password
+            bootstrapAdmin:
+              user:
+                secret: my-static-admin-secret
+            ingress:
+              enabled: false
+            http:
+              httpEnabled: true
+            proxy:
+              headers: xforwarded
+
+    - name: Wait 15 seconds for keycloak-service to be ready
+      ansible.builtin.pause:
+        seconds: 15
+
+    - name: Set up TLS certificate for Keycloak
+      ansible.builtin.include_role:
+        name: domain_cert
+      vars:
+        domain_cert_domain: "{{ keycloak_domain }}"
+        domain_cert_cert_name: keycloak-cert
+        domain_cert_secret_name: keycloak-tls-secret
+        domain_cert_cert_namespace: keycloak
+
+    - name: Create Keycloak IngressRoute via Traefik CRD
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: traefik.io/v1alpha1
+          kind: IngressRoute
+          metadata:
+            name: keycloak-ingressroute
+            namespace: keycloak
+          spec:
+            entryPoints:
+              - websecure
+            routes:
+              - match: "Host(`{{ keycloak_domain }}`)"
+                kind: Rule
+                services:
+                  - name: main-keycloak-service
+                    port: 8080
+                    serversTransport: keycloak-transport
+            tls:
+              secretName: keycloak-tls-secret

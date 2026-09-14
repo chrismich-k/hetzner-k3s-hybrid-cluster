@@ -1,0 +1,26 @@
+---
+- name: Enable general ipv6 routing
+  block:
+    - name: Load br_netfilter module
+      community.general.modprobe:
+        name: br_netfilter
+        state: present
+
+    - name: Activate br_netfilter on boot
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/k3s-br-netfilter.conf
+        content: "br_netfilter\n"
+        mode: "0644"
+
+    - name: Set IPv6-forwarding and bridge-netfilter
+      ansible.posix.sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        sysctl_file: /etc/sysctl.d/99-k3s-ipv6.conf
+        sysctl_set: true
+        reload: true
+      loop:
+        - { name: "net.ipv6.conf.all.forwarding", value: "1" }
+        - { name: "net.ipv6.conf.default.forwarding", value: "1" }
+        - { name: "net.bridge.bridge-nf-call-ip6tables", value: "1" }
+        - { name: "net.bridge.bridge-nf-call-iptables", value: "1" }

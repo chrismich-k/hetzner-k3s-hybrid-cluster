@@ -1,0 +1,62 @@
+---
+- name: Configure the vSwitch VLAN interface for hrobot private-network connectivity
+  become: true
+  # this is only needed for dedicated/robot servers connected via vSwitch.
+  when: provider_type == 'hrobot'
+  block:
+    - name: Install vlan package (802.1Q support for ifupdown)
+      ansible.builtin.apt:
+        name: vlan
+        state: present
+        update_cache: true
+
+    - name: Load 8021q kernel module
+      community.general.modprobe:
+        name: "8021q"
+        state: present
+
+    - name: Persist 8021q module load on boot
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/8021q.conf
+        content: "8021q\n"
+        mode: "0644"
+
+    - name: Determine the physical interface carrying the public IPv4
+      ansible.builtin.set_fact:
+        hrobot_vswitch_vlan_vswitch_main_iface: "{{ (ansible_facts | dict2items
+          | selectattr('value.ipv4.address', 'defined')
+          | selectattr('value.ipv4.address', 'equalto', ipv4)
+          | map(attribute='key') | first) }}"
+
+    - name: Compute the VLAN sub-interface name
+      ansible.builtin.set_fact:
+        hrobot_vswitch_vlan_vswitch_vlan_iface: "{{ hrobot_vswitch_vlan_vswitch_main_iface }}.{{ vswitch_vlan_id }}"
+
+    - name: Write the vSwitch VLAN interface config
+      ansible.builtin.template:
+        src: vswitch-vlan.interfaces.j2
+        dest: "/etc/network/interfaces.d/{{ hrobot_vswitch_vlan_vswitch_vlan_iface }}"
+        mode: "0644"
+      register: hrobot_vswitch_vlan_vswitch_vlan_config
+
+    # the interface may be down even when the config file didn't change (e.g.
+    # after a manual "ifdown" while troubleshooting, or on a node that's never
+    # been brought up yet).
+    - name: Check whether the interface is currently up
+      ansible.builtin.set_fact:
+        hrobot_vswitch_vlan_vswitch_vlan_iface_is_up: "{{ ansible_facts[hrobot_vswitch_vlan_vswitch_vlan_iface].active | default(false) }}"
+
+    # ifupdown refuses to "ifup" an interface it already considers up, so an
+    # existing (e.g. previously misconfigured) interface must be taken down
+    # first.
+    - name: Take the interface down before reapplying (only if config changed)
+      ansible.builtin.command:
+        cmd: "ifdown --force {{ hrobot_vswitch_vlan_vswitch_vlan_iface }}"
+      when: hrobot_vswitch_vlan_vswitch_vlan_config.changed
+      failed_when: false
+      changed_when: false
+
+    - name: Bring the vSwitch VLAN interface up (if changed or not currently up)
+      ansible.builtin.command:
+        cmd: "ifup {{ hrobot_vswitch_vlan_vswitch_vlan_iface }}"
+      when: hrobot_vswitch_vlan_vswitch_vlan_config.changed or not hrobot_vswitch_vlan_vswitch_vlan_iface_is_up

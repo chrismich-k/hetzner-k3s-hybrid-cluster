@@ -1,0 +1,13 @@
+# Python packages needed on the Ansible *control machine* (not the target
+# nodes - those get their own venv from roles/custom_ansible_venv).
+# Install with: pip install -r requirements.txt
+
+# roles/argocd hashes the ArgoCD admin password with the password_hash('bcrypt')
+# Jinja filter, which needs passlib's bcrypt backend. Pin bcrypt below 4.1 -
+# passlib (last released 2020, effectively unmaintained) can't detect newer
+# bcrypt releases and fails with a misleading "password cannot be longer
+# than 72 bytes" error even for short passwords, regardless of length.
+passlib
+bcrypt<4.1
+ansible-lint
+yamllint

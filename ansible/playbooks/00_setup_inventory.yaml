@@ -1,0 +1,84 @@
+---
+- name: Load inventory from terraform
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read terraform output as json
+      command: terraform output -json
+      args:
+        chdir: "../../terraform"
+      register: tf_output_raw
+      no_log: true
+      # fix --check
+      check_mode: false
+
+    - name: Convert to ansible fact
+      set_fact:
+        tf_out: "{{ tf_output_raw.stdout | from_json }}"
+      no_log: true
+
+    - name: Build masters group
+      add_host:
+        name: "{{ item.key }}"
+        # masters_bootstrap = the one master that starts the embedded-etcd
+        # cluster (cluster-init) and holds k3s_master_alias_ipv4_priv;
+        # masters_join = every other master, which joins through it
+        groups: "{{ ['masters'] + (['masters_bootstrap'] if item.key == tf_out.k3s_primary_master.value else ['masters_join']) }}"
+        ansible_host: "{{ item.value.ipv4 | default(item.value.ipv6, true) }}"
+        ansible_port: "{{ item.value.ssh_port }}"
+        ansible_ssh_private_key_file: "{{ item.value.ssh_key_path }}"
+        ansible_user: "{{ item.value.ssh_user }}"
+        ipv4_priv: "{{ item.value.ipv4_priv }}"
+        ipv4: "{{ item.value.ipv4 }}"
+        ipv6: "{{ item.value.ipv6 }}"
+        provider_id: "{{ item.value.provider_id }}"
+        provider_mode: "{{ item.value.mode }}"
+        provider_type: "{{ item.value.type }}"
+        ingress_target: "{{ item.value.ingress_target }}"
+        node_labels: "{{ item.value.node_labels }}"
+      loop: "{{ tf_out.master_nodes.value | dict2items }}"
+
+    # a singleton group - exactly one member - for actions that should run
+    # exactly once per cluster (Helm installs, cluster-wide k8s API
+    # objects) rather than once per master. This repo only ever manages
+    # one cluster per inventory run, deliberately. Note: this must stay a tag
+    # on a real master (reusing its already-correct public ansible_host), never
+    # a synthetic host addressed via k3s_master_alias_ipv4_priv - that
+    # address is private-network-only and unreachable from the Ansible
+    # control machine.
+    #
+    # The member is the current alias-IP holder, NOT groups['masters'][0]
+    # (alphabetically-first) - a real bug surfaced during a holder-failover
+    # test: groups['masters'][0] stays "master-01" by name regardless of
+    # whether that specific host is actually reachable, so once master-01
+    # was powered off (or removed from cluster_nodes entirely), every
+    # "hosts: clusters" play and the coredns-restart handler's
+    # delegate_to started failing outright. The holder is the one
+    # guaranteed to have actually participated in this run (that's what
+    # makes it useful as a join address to begin with).
+    - name: Tag the cluster-representative host (cluster-wide, run-once actions target this group instead of "masters")
+      add_host:
+        name: "{{ tf_out.k3s_primary_master.value }}"
+        groups: clusters
+
+    - name: Build agents group
+      add_host:
+        name: "{{ item.key }}"
+        groups: agents
+        ansible_host: "{{ item.value.ipv4 | default(item.value.ipv6, true) }}"
+        ansible_port: "{{ item.value.ssh_port }}"
+        ansible_ssh_private_key_file: "{{ item.value.ssh_key_path }}"
+        ansible_user: "{{ item.value.ssh_user }}"
+        ipv4_priv: "{{ item.value.ipv4_priv }}"
+        ipv4: "{{ item.value.ipv4 }}"
+        ipv6: "{{ item.value.ipv6 }}"
+        provider_id: "{{ item.value.provider_id }}"
+        provider_mode: "{{ item.value.mode }}"
+        provider_type: "{{ item.value.type }}"
+        ingress_target: "{{ item.value.ingress_target }}"
+        node_labels: "{{ item.value.node_labels }}"
+        # only meaningful for hrobot nodes (roles/hrobot_vswitch_vlan), harmless
+        # to carry on hcloud agents too
+        vswitch_vlan_id: "{{ tf_out.vswitch_vlan_id.value }}"
+      loop: "{{ tf_out.agent_nodes.value | dict2items }}"

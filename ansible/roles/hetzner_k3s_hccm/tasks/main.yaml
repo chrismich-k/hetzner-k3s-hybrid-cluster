@@ -1,0 +1,50 @@
+---
+- name: Install Hetzner Cloud Controller Manager (HCCM) on K3s hybrid cluster
+  block:
+    - name: Create Hetzner API & Robot credentials secret in kube-system
+      kubernetes.core.k8s:
+        state: present
+        force: true
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: hcloud
+            namespace: kube-system
+          type: Opaque
+          stringData:
+            # sourced once from terraform output (via 00_setup_inventory.yaml's
+            # localhost fact), not duplicated as a per-host var, to avoid
+            # copying the secret into every master's hostvars
+            token: "{{ hostvars['localhost'].tf_out.hcloud_token.value }}"
+            robot-user: "{{ hostvars['localhost'].tf_out.hrobot_api_user.value }}"
+            robot-password: "{{ hostvars['localhost'].tf_out.hrobot_api_pass.value }}"
+            network: "{{ hetzner_network_name }}"
+      no_log: true
+
+    - name: Add Hetzner Helm repository
+      kubernetes.core.helm_repository:
+        name: hcloud
+        repo_url: "https://charts.hetzner.cloud"
+
+    - name: Install Hetzner Cloud Controller Manager (HCCM) via Helm
+      kubernetes.core.helm:
+        name: hcloud-cloud-controller-manager
+        chart_ref: hcloud/hcloud-cloud-controller-manager
+        release_namespace: kube-system
+        wait: true
+        values:
+          secret:
+            name: hcloud
+            tokenKey: token
+            robotUserKey: robot-user
+            robotPasswordKey: robot-password
+          robot:
+            enabled: true
+          networking:
+            enabled: false
+          nodeSelector:
+            instance.type: "hcloud"
+          env:
+            HCLOUD_ALLOW_UNTAGGED_CLOUD:
+              value: "true"

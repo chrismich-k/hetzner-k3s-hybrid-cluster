@@ -1,0 +1,4 @@
+---
+# ClusterIssuer used by the Certificate this role creates - override per
+# call via `vars: domain_cert_issuer_name: ...` on the include_role invocation
+domain_cert_issuer_name: letsencrypt-prod

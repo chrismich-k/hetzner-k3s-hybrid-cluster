@@ -1,0 +1,10 @@
+---
+- name: Restart k3s
+  ansible.builtin.systemd:
+    name: k3s
+    state: restarted
+
+- name: Restart coredns pods
+  ansible.builtin.command: kubectl -n kube-system rollout restart deployment coredns
+  delegate_to: "{{ groups['clusters'][0] }}"
+  run_once: true

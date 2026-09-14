@@ -1,0 +1,174 @@
+# Sample configuration for the nodes and network of the k3s cluster
+# to be created and setup at Hetzner.
+# copy terraform.tfvars.example (this file) to terraform.tfvars and customize.
+
+# Name of your project, used to set up the keycloak realm and demo app ingress
+# doesn't need to be the Hetzner project but could be
+project_name = "<PROJECTNAME>" # eg "test"
+
+# Hetzner Robot Credentials
+# https://robot.hetzner.com/preferences/index ("Webservice and app settings")
+# for Ansible role "hetzner_k3s_hccm" Hetzner Cloud Controller Manager (HCCM)
+hrobot_api_user = "<API_USER>"
+hrobot_api_pass = "<API_PASS>"
+
+# Hetzner Cloud Credentials for the project
+# this is specific to your Project (https://console.hetzner.com/projects),
+# so a Hetzner project needs to be created first.
+# in the following URLs replace <project_id> with your actual id.
+#
+# https://console.hetzner.com/projects/<project_id>/security/tokens
+# used for Terraform, and Ansible roles "hetzner_k3s_hccm" (HCCM)
+# and "hetzner_k3s_csi" (Hetzner CSI)
+# this is specific to your Project (https://console.hetzner.com/projects),
+# in URLs below replace <project_id> with your actual id.
+hcloud_token = "<TOKEN>"
+
+# your ssh_key registered at Hetzner, and your local path to the same key
+# https://console.hetzner.com/projects/<project_id>/security/sshkeys
+# (newly created hcloud servers will get this key in .ssh/authorized_keys)
+ssh_key_name = "<NAME_OF_SSH_KEY>"
+default_ssh_key_path = "~/.ssh/id_ed25519" # default for your local key
+
+# Configuration for the private Hetzner Network,
+# including the vSwitch / cloud subnets
+# https://console.hetzner.com/projects/<project_id>/networks
+
+# name of the private network to be created
+hetzner_network_name = "<NETWORK_NAME>"
+
+# id of the Hetzner vSwitch for the dedicated servers
+# https://robot.hetzner.com/vswitch/index
+vswitch_id = <VSWITCH_ID> # eg 123456, *not* the vLAN id
+vswitch_vlan_id = <VLAN_ID> # eg 4000
+
+# distribution to use for newly created servers / nodes
+hcloud_node_image = "ubuntu-26.04" # default is "ubuntu-26.04"
+
+# Multi-master (embedded-etcd) HA: a stable private IP (Hetzner Cloud
+# "Alias IP") that always routes to whichever master currently holds it -
+# the join address masters/agents use instead of one master's own
+# ipv4_priv. Pick any free address inside ip_range_sub_hcloud that isn't
+# already used as any cluster_nodes[...].ipv4_priv below.
+k3s_master_alias_ipv4_priv = "10.0.1.1" # example - pick your own free address
+
+# cluster_nodes key (below) of the one master used for cluster-wide
+# management purposes - it now serves several roles at once:
+#   - holds k3s_master_alias_ipv4_priv (the Hetzner Cloud Alias IP above)
+#   - bootstraps the embedded-etcd cluster (`cluster-init: true`); every
+#     other master joins through it instead
+#   - is the sole target for cluster-wide, run-once Ansible actions (Helm
+#     installs, Keycloak/ArgoCD setup, ...) via the "clusters" inventory
+#     group
+# To fail over, change this to another already-running master and
+# `terraform apply` (no automatic failover) - see the root README.md's
+# "Use cases" section for the full procedure.
+k3s_primary_master = "master-01"
+
+# Definition of all Hetzner Servers to be used as Masters or Agents
+cluster_nodes = {
+  # example of cloud node to be newly created and used as k3s master
+  # (control-plane)
+  #
+  # since it's a "hcloud" & "master" it will be created with public ipv4,
+  # so it will also get the following label:
+  # "node-capabilities/public-ipv4"
+  # and it will make sense to set "ingress_target = true" as well,
+  # as you need at least one node for ingress
+  "master-01" = {
+    role = "master"
+    type = "hcloud"
+    mode = "create"
+    server_type = "cpx12" # "cx23" / whatever size/tier/location available
+    location = "nbg1"
+    ipv4_priv = "10.0.1.2" # unique, from ip_range_sub_hcloud
+    ingress_target = true # Traefik will listen (hostPort 80/443) on this node
+  }
+
+  # while just ine master will be fine, this is an
+  # example of two more master nodes for a high availability (HA) cluster,
+  # to provide redundancy and avoid a single point of failure.
+  # for HA clusters, there needs to be an uneven number of master nodes (e.g. 3, 5, 7)
+  # to avoid quorum issues in case of a network partition or node failure.
+  "master-02" = {
+    role = "master"
+    type = "hcloud"
+    mode = "create"
+    server_type = "cpx12" # "cx23" / whatever size/tier/location available
+    location = "nbg1"
+    ipv4_priv = "10.0.1.3" # unique, from ip_range_sub_hcloud
+    ingress_target = true # Traefik will listen (hostPort 80/443) on this node
+  }
+  "master-03" = {
+    role = "master"
+    type = "hcloud"
+    mode = "create"
+    server_type = "cpx12" # "cx23" / whatever size/tier/location available
+    location = "nbg1"
+    ipv4_priv = "10.0.1.4" # unique, from ip_range_sub_hcloud
+    ingress_target = true # Traefik will listen (hostPort 80/443) on this node
+  }
+
+  # example of existing robot (dedicated or auction) server
+  # as a k3s agent (worker) node
+  # "hrobot"-type nodes will get the following label by default:
+  # "node-purpose/infrastructure=true"
+  # "instance.type=hrobot"
+  #
+  # as they typically would have a public ipv4, they'd also get:
+  # "node-capabilities/public-ipv4=true"
+  # so you could make them one of your ingress targets with this:
+  # "ingress-target=true"
+  #
+  # they would have plenty of RAM and storage at an affordable price,
+  # so you could host some permanent DBs there. add your own labels
+  # and use for affinity (eg nodeSelector) as you wish.
+  #
+  # see https://robot.hetzner.com/server for:
+  # - provider_id (which is the plain number
+  #                after "Server Auction #" or eg "EX44 #")
+  # - ipv4 (public!)
+  # - ipv6 (you'd get the ::/64 subnet - just substitute for ::2)
+  "juno" = {
+    role           = "agent"
+    type           = "hrobot"
+    mode           = "existing"
+    provider_id    = 3456789
+    ipv4           = "123.45.67.89"
+    ipv6           = "2a01:4f8:1234:abcd::2"
+    ipv4_priv      = "10.0.2.1" # unique from ip_range_sub_vswitch
+    ingress_target = true # Traefik will listen (hostPort 80/443) on this node
+    node_labels    = {
+      "myproject_database" = "true" # some custom label
+    }
+    # some optional custom overrides for defaults "root", port 22,
+    # and default_ssh_key_path (see above)
+    ssh_user       = "chris"
+    ssh_port       = 2222
+    ssh_key_path   = "/home/chris/.ssh/id_ed25519"
+  }
+
+  # example of existing hcloud server as an k3s agent (worker)
+  "agent-01" = {
+    role           = "agent"
+    type           = "hcloud"
+    mode           = "existing"
+    provider_id    = 123456789
+    ipv4_priv      = "10.0.1.10" # unique, from ip_range_sub_hcloud
+  }
+
+  # example of hcloud server to be newly created and used as k3s agent (worker)
+  "agent-02" = {
+    role           = "agent"
+    type           = "hcloud"
+    mode           = "create"
+    server_type    = "cpx12" # "cx23" / whatever size/tier/location available
+    location       = "nbg1"
+    ipv4_priv      = "10.0.1.11" # unique, from ip_range_sub_hcloud
+    # arbitrary extra k3s node-labels, applied in addition to the built-in
+    # ones (instance.type, ingress-target, node-capabilities/public-ipv4, ...)
+    node_labels    = {
+      "workload/crawler" = "true"
+    }
+  }
+}

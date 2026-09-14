@@ -1,0 +1,19 @@
+---
+# hrobot servers get some generic image-based hostname (e.g.
+# "debian-trixie-latest-amd64-base.zst") from Hetzner Robot's installimage,
+# unlike hcloud servers whose hostname is set to the Terraform name
+# automatically via cloud-init.
+- name: Set the OS hostname on hrobot servers to match the intended node name
+  become: true
+  when: provider_type == 'hrobot'
+  block:
+    - name: Set hostname to the cluster_nodes name
+      ansible.builtin.hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: Ensure /etc/hosts resolves the new hostname locally
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: "^127\\.0\\.1\\.1\\s"
+        line: "127.0.1.1\t{{ inventory_hostname }}"
+        state: present

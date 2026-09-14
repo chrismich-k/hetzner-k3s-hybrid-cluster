@@ -1,0 +1,224 @@
+---
+- name: Install ArgoCD
+
+  block:
+    - name: Create argocd namespace
+      kubernetes.core.k8s:
+        name: argocd
+        kind: Namespace
+        state: present
+
+    # this role registers its own Keycloak client
+    - name: Ensure ArgoCD client exists in Keycloak
+      community.general.keycloak_client:
+        auth_keycloak_url: "https://{{ keycloak_domain }}"
+        auth_realm: master
+        auth_username: "{{ vault_keycloak_bootstrap_admin_user }}"
+        auth_password: "{{ vault_keycloak_bootstrap_admin_password }}"
+        realm: "{{ realm_name }}"
+        client_id: "{{ argocd_client_id }}"
+        name: "{{ argocd_client_id }}"
+        enabled: true
+        protocol: openid-connect
+        public_client: false
+        standard_flow_enabled: true
+        direct_access_grants_enabled: false
+        root_url: "https://{{ argo_domain }}"
+        base_url: "https://{{ argo_domain }}"
+        # ArgoCD's own OIDC callback path (not Grafana's/oauth2_proxy's) -
+        # see https://argo-cd.readthedocs.io/en/stable/operator-manual/user-management/#existing-oidc-provider
+        redirect_uris:
+          - "https://{{ argo_domain }}/auth/callback"
+        web_origins:
+          - "https://{{ argo_domain }}"
+        state: present
+      register: argocd_kc_client_result
+      # same rationale as roles/keycloak_config: Keycloak's pod can be
+      # Running/ready-for-traffic before its own bootstrap has finished
+      until: argocd_kc_client_result is succeeded
+      retries: 10
+      delay: 15
+
+    # community.general.keycloak_client never returns the real secret - its
+    # sanitize_cr() helper hardcodes result.end_state.secret to the literal
+    # string "no_log" regardless of any no_log setting here. See
+    # roles/keycloak_config for the full explanation; keycloak_clientsecret_info
+    # is the module that actually fetches the value via the Admin API.
+    - name: Retrieve the ArgoCD client secret from Keycloak
+      community.general.keycloak_clientsecret_info:
+        auth_keycloak_url: "https://{{ keycloak_domain }}"
+        auth_realm: master
+        auth_username: "{{ vault_keycloak_bootstrap_admin_user }}"
+        auth_password: "{{ vault_keycloak_bootstrap_admin_password }}"
+        realm: "{{ realm_name }}"
+        client_id: "{{ argocd_client_id }}"
+      register: argocd_kc_clientsecret_result
+
+    # ArgoCD reads additional secrets referenced from argocd-cm via
+    # "$<secret-name>:<key>" as long as they carry this label - see
+    # https://argo-cd.readthedocs.io/en/stable/operator-manual/user-management/#sensitive-data-and-sso-client-secrets
+    # kept as its own Secret (rather than Helm's configs.secret.extra)
+    # so the real value never has to pass through Helm values, same
+    # reasoning as roles/kube_prometheus_stack's grafana-oidc-secret
+    - name: Create ArgoCD OIDC client secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: argocd-oidc-secret
+            namespace: argocd
+            labels:
+              app.kubernetes.io/part-of: argocd
+          type: Opaque
+          stringData:
+            oidc.keycloak.clientSecret: "{{ argocd_kc_clientsecret_result.clientsecret_info.value }}"
+      no_log: true
+
+    - name: Add ArgoCD Helm Repository
+      kubernetes.core.helm_repository:
+        name: argo
+        repo_url: "https://argoproj.github.io/argo-helm"
+
+    - name: Install ArgoCD via Helm
+      kubernetes.core.helm:
+        name: argocd
+        chart_ref: argo/argo-cd
+        release_namespace: argocd
+        create_namespace: true
+        values:
+          server:
+            extraArgs:
+              - --insecure
+            service:
+              type: ClusterIP
+          # OIDC login via Keycloak, native to ArgoCD (no Dex needed)
+          dex:
+            enabled: false
+          configs:
+            cm:
+              resource.customizations: |
+                networking.k8s.io/Ingress:
+                  health.lua: |
+                    hs = {}
+                    hs.status = "Healthy"
+                    return hs
+              # ArgoCD's own externally-facing URL - required for the OIDC
+              # redirect/callback to be built correctly
+              url: "https://{{ argo_domain }}"
+              oidc.config: |
+                name: Keycloak
+                issuer: "https://{{ keycloak_domain }}/realms/{{ realm_name }}"
+                clientID: "{{ argocd_client_id }}"
+                clientSecret: $argocd-oidc-secret:oidc.keycloak.clientSecret
+                # ArgoCD's default requestedScopes is [openid, profile,
+                # email, groups] - "groups" isn't a scope vanilla Keycloak
+                # assigns to new clients by default (unlike email/profile),
+                # so requesting it unconditionally gets the whole login
+                # rejected with "invalid_scope: Invalid scopes: openid
+                # profile email groups". We only need email for the
+                # email-based RBAC below, so leave "groups" out rather
+                # than creating an unused Keycloak client scope for it.
+                requestedScopes:
+                  - openid
+                  - profile
+                  - email
+            # simple (email-based) RBAC for now: the one admin user is
+            # mapped by their Keycloak login email directly, no Keycloak
+            # groups involved. Everyone else who can log in but
+            # isn't in policy.csv falls back to role:readonly rather than
+            # being locked out entirely, same "don't hard-fail unmapped
+            # users" philosophy as Grafana's auto_assign_org_role: Viewer.
+            rbac:
+              policy.default: "role:readonly"
+              policy.csv: |
+                g, {{ argocd_sso_admin_email }}, role:admin
+              # "email" here must match the OIDC claim policy.csv matches
+              # against above - covered by oidc.config.requestedScopes set
+              # explicitly to [openid, profile, email] further up
+              scopes: "[email]"
+          global:
+            nodeSelector:
+              "node-purpose/infrastructure": "true"
+            tolerations:
+              - key: "node.kubernetes.io/network-unavailable"
+                operator: "Exists"
+                effect: "NoSchedule"
+
+    # local "admin" login stays available as a break-glass account
+    # alongside Keycloak SSO, same philosophy as
+    # roles/kube_prometheus_stack's Grafana admin fallback - without this,
+    # ArgoCD keeps using the random password it auto-generates into
+    # argocd-initial-admin-secret on first install, which is fine for a
+    # first login but not something to keep relying on long-term.
+    # Deliberately patched into the chart-managed argocd-secret after the
+    # fact (kubernetes.core.k8s merges rather than replaces) instead of
+    # via the chart's own configs.secret.argocdServerAdminPassword value -
+    # same reasoning as the OIDC secret above and roles/hetzner_k3s_hccm's
+    # hcloud secret: keep the actual secret material out of Helm values,
+    # even though what's stored here is a one-way bcrypt hash rather than
+    # the plaintext password itself. ArgoCD's own admin-password rotation
+    # (CLI/API) updates these same two keys later, so it stays compatible.
+    - name: Set the ArgoCD admin password
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: argocd-secret
+            namespace: argocd
+          stringData:
+            admin.password: "{{ vault_argocd_admin_password | password_hash('bcrypt', argocd_admin_password_bcrypt_salt) }}"
+            admin.passwordMtime: "{{ argocd_admin_password_mtime }}"
+      no_log: true
+
+    # TLS certificate handling (DNS pre-check + Certificate + wait-for-secret)
+    # is shared via roles/domain_cert - same pattern used by
+    # roles/keycloak_operator, roles/oauth2_proxy, and
+    # roles/kube_prometheus_stack. The IngressRoute below stays here since
+    # it's ArgoCD-specific (backend service/port).
+    - name: Set up TLS certificate for ArgoCD
+      ansible.builtin.include_role:
+        name: domain_cert
+      vars:
+        domain_cert_domain: "{{ argo_domain }}"
+        domain_cert_cert_name: argocd-cert
+        domain_cert_secret_name: argocd-tls-secret
+        domain_cert_cert_namespace: argocd
+
+    - name: Create ArgoCD IngressRoute via Traefik CRD
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: traefik.io/v1alpha1
+          kind: IngressRoute
+          metadata:
+            name: argocd-ingressroute
+            namespace: argocd
+          spec:
+            entryPoints:
+              - websecure
+            routes:
+              - match: "Host(`{{ argo_domain }}`)"
+                kind: Rule
+                services:
+                  - name: argocd-server
+                    port: 80
+            tls:
+              secretName: argocd-tls-secret
+
+    # install ArgoCD CLI
+    - name: Check version of ArgoCD CLI
+      ansible.builtin.uri:
+        url: https://api.github.com/repos/argoproj/argo-cd/releases/latest
+        return_content: true
+      register: argocd_release
+      changed_when: false
+
+    - name: Download and install ArgoCD CLI
+      ansible.builtin.get_url:
+        url: "https://github.com/argoproj/argo-cd/releases/download/{{ argocd_release.json.tag_name }}/argocd-linux-amd64"
+        dest: /usr/local/bin/argocd
+        mode: "0755"

@@ -1,0 +1,21 @@
+---
+# Fixed (non-secret) bcrypt salt for the ArgoCD admin password hash in
+# tasks/main.yaml. Passing an explicit salt to the password_hash('bcrypt')
+# filter is what makes the resulting hash idempotent across Ansible runs -
+# without it, the filter picks a fresh random salt every run, so the
+# rendered Secret would look "changed" every single time even though
+# vault_argocd_admin_password never did. Safe to be non-secret and fixed:
+# bcrypt stores the salt in the hash string itself anyway (it's there to
+# defeat rainbow tables, not to add secrecy), so only
+# vault_argocd_admin_password needs to stay secret for the resulting hash
+# to be secure. Requires "passlib" (with a "bcrypt" backend below version
+# 4.1) on the Ansible control machine.
+argocd_admin_password_bcrypt_salt: "hetznerhybridk3sargocd"
+
+# Fixed placeholder for the admin password's "last changed" bookkeeping
+# field (argocd-secret's admin.passwordMtime) - purely cosmetic, shown in
+# `argocd account list`/the UI, not used for authentication itself. Kept
+# as a static value for the same idempotency reason as the salt above
+# (ansible_date_time.iso8601 would change every run). Bump this by hand if
+# you ever want ArgoCD's UI to reflect a more accurate change date.
+argocd_admin_password_mtime: "2025-01-01T00:00:00Z"

@@ -1,0 +1,42 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: {{ traefik_namespace }}
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - traefik-middleware.yaml
+  - ingressroute.yaml
+
+# unencrypted vars become a ConfigMap here
+configMapGenerator:
+  - name: oauth2-proxy-config
+    literals:
+      - OAUTH2_PROXY_PROVIDER={{ oauth_provider }}
+      - OAUTH2_PROXY_OIDC_ISSUER_URL={{ oauth_oidc_issuer_url }}
+      - OAUTH2_PROXY_CLIENT_ID={{ oauth_client_id }}
+      - OAUTH2_PROXY_COOKIE_DOMAINS=".{{ cluster_domain }}"
+      - OAUTH2_PROXY_UPSTREAMS=static://200   # file:///dev/null
+      - OAUTH2_PROXY_EMAIL_DOMAINS=*
+      - OAUTH2_PROXY_INSECURE_OIDC_ALLOW_UNVERIFIED_EMAIL="true"
+      - OAUTH2_PROXY_REDIRECT_URL="https://{{ auth_domain }}/oauth2/callback"
+      - OAUTH2_PROXY_DEFAULT_REDIRECT_URL=https://{{ app_domain }}
+      - OAUTH2_PROXY_WHITELIST_DOMAINS=".{{ cluster_domain }}"
+      - OAUTH2_PROXY_ERRORS_TO_INFO_LOG="true"
+      - OAUTH2_PROXY_PROMPT="login"
+      - OAUTH2_PROXY_ACTION="login"
+      - OAUTH2_PROXY_AUTH_LOGGING="true"
+      - OAUTH2_PROXY_REVERSE_PROXY="true"
+      - OAUTH2_PROXY_SET_XAUTHREQUEST="true"
+      - OAUTH2_PROXY_SET_AUTHORIZATION_HEADER="true"
+      - OAUTH2_PROXY_PASS_USER_HEADERS="true"
+      - OAUTH2_PROXY_COOKIE_SECURE="true"
+      - OAUTH2_PROXY_COOKIE_SAMESITE="lax"
+
+# vault secrets become a K8s Secret here
+secretGenerator:
+  - name: oauth2-proxy-secrets
+    literals:
+      - OAUTH2_PROXY_CLIENT_SECRET={{ oauth2_proxy_client_secret }}
+      - OAUTH2_PROXY_COOKIE_SECRET={{ vault_oauth_cookie_secret }}

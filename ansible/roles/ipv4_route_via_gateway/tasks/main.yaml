@@ -1,0 +1,26 @@
+---
+- name: Route IPv4 default traffic via the ipv4 gateway (hcloud agents without public IPv4)
+  # hrobot nodes are assumed to always have their own public IPv4 already and
+  # are intentionally out of scope here
+  when: provider_type == 'hcloud' and (ipv4 | default('', true) | trim == '')
+  block:
+    - name: Determine the private-network interface (matches ipv4_priv)
+      ansible.builtin.set_fact:
+        ipv4_route_via_gateway_ipv4_gateway_route_iface: "{{ (ansible_facts | dict2items
+          | selectattr('value.ipv4.address', 'defined')
+          | selectattr('value.ipv4.address', 'equalto', ipv4_priv)
+          | map(attribute='key') | first) }}"
+
+    - name: Install the IPv4 default-route systemd unit
+      ansible.builtin.template:
+        src: ipv4-gateway-route.service.j2
+        dest: /etc/systemd/system/ipv4-gateway-route.service
+        mode: "0644"
+      notify: Restart ipv4-gateway-route service
+
+    - name: Enable and start the IPv4 default-route service
+      ansible.builtin.systemd:
+        name: ipv4-gateway-route.service
+        daemon_reload: true
+        enabled: true
+        state: started

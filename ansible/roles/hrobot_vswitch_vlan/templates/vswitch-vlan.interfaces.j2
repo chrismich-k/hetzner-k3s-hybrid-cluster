@@ -1,0 +1,7 @@
+auto {{ hrobot_vswitch_vlan_vswitch_vlan_iface }}
+iface {{ hrobot_vswitch_vlan_vswitch_vlan_iface }} inet static
+  address {{ ipv4_priv }}/{{ hrobot_vswitch_vlan_vswitch_subnet_prefix_len }}
+  vlan-raw-device {{ hrobot_vswitch_vlan_vswitch_main_iface }}
+  mtu {{ hrobot_vswitch_vlan_vswitch_iface_mtu }}
+  up ip route add {{ hrobot_vswitch_vlan_hetzner_private_network_cidr }} via {{ hrobot_vswitch_vlan_hetzner_vswitch_gateway_ip }} dev {{ hrobot_vswitch_vlan_vswitch_vlan_iface }} onlink
+  down ip route del {{ hrobot_vswitch_vlan_hetzner_private_network_cidr }} via {{ hrobot_vswitch_vlan_hetzner_vswitch_gateway_ip }} dev {{ hrobot_vswitch_vlan_vswitch_vlan_iface }} onlink

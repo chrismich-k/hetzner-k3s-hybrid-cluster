@@ -1,0 +1,16 @@
+---
+- name: Load inventory from Terraform
+  import_playbook: playbooks/00_setup_inventory.yaml
+
+- name: Install keycloak and oauth2_proxy on cluster
+  hosts: clusters
+  become: true
+  environment:
+    KUBECONFIG: "{{ custom_kubeconfig }}"
+  module_defaults:
+    kubernetes.core.k8s:
+      kubeconfig: "{{ custom_kubeconfig }}"
+  roles:
+    - role: keycloak_operator
+    - role: keycloak_config
+    - role: oauth2_proxy
