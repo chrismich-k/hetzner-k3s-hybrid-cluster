@@ -103,3 +103,9 @@
       kubeconfig: "{{ custom_kubeconfig }}"
   roles:
     - role: cloudnative_pg
+
+- name: Install kustomize CLI on cluster host
+  hosts: clusters
+  become: true
+  roles:
+    - role: kustomize_cli

@@ -1,0 +1,29 @@
+---
+# Standalone kustomize CLI for manual admin use on the cluster host
+- name: Install kustomize CLI
+
+  block:
+    - name: Get kustomize release list
+      ansible.builtin.uri:
+        url: https://api.github.com/repos/kubernetes-sigs/kustomize/releases
+        return_content: true
+      register: kustomize_releases
+      changed_when: false
+
+    - name: Determine latest kustomize CLI release tag
+      ansible.builtin.set_fact:
+        kustomize_release_tag: "{{ (kustomize_releases.json | selectattr('tag_name', 'match', '^kustomize/') | first).tag_name }}"
+
+    - name: Download kustomize archive
+      ansible.builtin.get_url:
+        # the release tag's "/" must be percent-encoded in the download URL
+        url: "https://github.com/kubernetes-sigs/kustomize/releases/download/{{ kustomize_release_tag | replace('/', '%2F') }}/kustomize_{{ kustomize_release_tag.split('/')[1] }}_linux_amd64.tar.gz"
+        dest: /tmp/kustomize.tar.gz
+        mode: "0644"
+
+    - name: Extract kustomize binary
+      ansible.builtin.unarchive:
+        src: /tmp/kustomize.tar.gz
+        dest: /usr/local/bin
+        remote_src: true
+        mode: "0755"
