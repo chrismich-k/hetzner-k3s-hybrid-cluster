@@ -1,0 +1,237 @@
+---
+- name: Install RustFS
+  block:
+    - name: Create rustfs namespace
+      kubernetes.core.k8s:
+        name: "{{ rustfs_namespace }}"
+        kind: Namespace
+        state: present
+
+    # this role registers its own Keycloak client
+    - name: Ensure RustFS console client exists in Keycloak
+      community.general.keycloak_client:
+        auth_keycloak_url: "https://{{ keycloak_domain }}"
+        auth_realm: master
+        auth_username: "{{ vault_keycloak_bootstrap_admin_user }}"
+        auth_password: "{{ vault_keycloak_bootstrap_admin_password }}"
+        realm: "{{ realm_name }}"
+        client_id: "{{ rustfs_client_id }}"
+        name: "{{ rustfs_client_id }}"
+        enabled: true
+        protocol: openid-connect
+        public_client: false
+        standard_flow_enabled: true
+        direct_access_grants_enabled: false
+        root_url: "https://{{ rustfs_console_domain }}"
+        base_url: "https://{{ rustfs_console_domain }}"
+        # RustFS console's own OIDC callback path
+        redirect_uris:
+          - "https://{{ rustfs_console_domain }}/rustfs/admin/v3/oidc/callback/default"
+        web_origins:
+          - "https://{{ rustfs_console_domain }}"
+        # exposes the caller's Keycloak client roles (consoleAdmin/readonly/
+        # readwrite, created below) as a "roles" claim - added directly on
+        # the client (lands in its auto-created "<client>-dedicated" scope)
+        # rather than as a separate client scope object
+        protocol_mappers:
+          - name: rustfs-console-user-client-role-mapper
+            protocol: openid-connect
+            protocolMapper: oidc-usermodel-client-role-mapper
+            config:
+              usermodel.clientRoleMapping.clientId: "{{ rustfs_client_id }}"
+              usermodel.clientRoleMapping.rolePrefix: ""
+              multivalued: "true"
+              claim.name: roles
+              id.token.claim: "true"
+              access.token.claim: "true"
+              userinfo.token.claim: "true"
+              introspection.token.claim: "true"
+        state: present
+      register: rustfs_kc_client_result
+      until: rustfs_kc_client_result is succeeded
+      retries: 10
+      delay: 15
+
+    # client roles on the rustfs-console client
+    - name: Ensure RustFS console client roles exist in Keycloak
+      community.general.keycloak_role:
+        auth_keycloak_url: "https://{{ keycloak_domain }}"
+        auth_realm: master
+        auth_username: "{{ vault_keycloak_bootstrap_admin_user }}"
+        auth_password: "{{ vault_keycloak_bootstrap_admin_password }}"
+        realm: "{{ realm_name }}"
+        client_id: "{{ rustfs_client_id }}"
+        name: "{{ item }}"
+        state: present
+      loop:
+        - consoleAdmin
+        - readonly
+        - readwrite
+      register: rustfs_kc_role_result
+      until: rustfs_kc_role_result is succeeded
+      retries: 10
+      delay: 15
+
+    - name: Retrieve the RustFS console client secret from Keycloak
+      community.general.keycloak_clientsecret_info:
+        auth_keycloak_url: "https://{{ keycloak_domain }}"
+        auth_realm: master
+        auth_username: "{{ vault_keycloak_bootstrap_admin_user }}"
+        auth_password: "{{ vault_keycloak_bootstrap_admin_password }}"
+        realm: "{{ realm_name }}"
+        client_id: "{{ rustfs_client_id }}"
+      register: rustfs_kc_clientsecret_result
+
+    - name: Create RustFS OIDC client secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: rustfs-oidc-secret
+            namespace: "{{ rustfs_namespace }}"
+          type: Opaque
+          stringData:
+            client-secret: "{{ rustfs_kc_clientsecret_result.clientsecret_info.value }}"
+      no_log: true
+
+    # S3 access/secret key - kept out of Helm values entirely (secret.existingSecret
+    # below)
+    - name: Create RustFS S3 credentials secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: rustfs-credentials
+            namespace: "{{ rustfs_namespace }}"
+          type: Opaque
+          stringData:
+            RUSTFS_ACCESS_KEY: "{{ vault_rustfs_access_key }}"
+            RUSTFS_SECRET_KEY: "{{ vault_rustfs_secret_key }}"
+      no_log: true
+
+    - name: Add RustFS Helm repository
+      kubernetes.core.helm_repository:
+        name: rustfs
+        repo_url: "https://charts.rustfs.com"
+
+    # chart_ref is the bare chart name + chart_repo_url, NOT "rustfs/rustfs" -
+    # prevent using any locally existing rustfs chart directory
+    - name: Install RustFS via Helm
+      kubernetes.core.helm:
+        name: rustfs
+        chart_ref: rustfs
+        chart_repo_url: "https://charts.rustfs.com"
+        chart_version: "{{ rustfs_chart_version }}"
+        release_namespace: "{{ rustfs_namespace }}"
+        create_namespace: true
+        values:
+          # single pod/PVC on the infrastructure node - local-path PVs are
+          # node-bound
+          mode:
+            standalone:
+              enabled: true
+            distributed:
+              enabled: false
+          secret:
+            existingSecret: rustfs-credentials
+          # explicit cert-manager Certificate + Traefik IngressRoute below
+          # instead of the chart's own Ingress object.
+          ingress:
+            enabled: false
+          storageclass:
+            name: local-path
+            dataStorageSize: "{{ rustfs_data_storage_size }}"
+            logStorageSize: "{{ rustfs_log_storage_size }}"
+          nodeSelector:
+            "node-purpose/infrastructure": "true"
+          tolerations:
+            - key: "node.kubernetes.io/network-unavailable"
+              operator: "Exists"
+              effect: "NoSchedule"
+          extraEnv:
+            - name: RUSTFS_BROWSER_REDIRECT_URL
+              value: "https://{{ rustfs_console_domain }}"
+            - name: RUSTFS_IDENTITY_OPENID_ENABLE
+              value: "on"
+            - name: RUSTFS_IDENTITY_OPENID_CONFIG_URL
+              # Keycloak's realm issuer URL
+              value: "{{ oauth_oidc_issuer_url }}"
+            - name: RUSTFS_IDENTITY_OPENID_CLIENT_ID
+              value: "{{ rustfs_client_id }}"
+            - name: RUSTFS_IDENTITY_OPENID_SCOPES
+              value: "openid,profile,email"
+            - name: RUSTFS_IDENTITY_OPENID_REDIRECT_URI
+              value: "https://{{ rustfs_console_domain }}/rustfs/admin/v3/oidc/callback/default"
+            - name: RUSTFS_IDENTITY_OPENID_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: rustfs-oidc-secret
+                  key: client-secret
+            - name: RUSTFS_IDENTITY_OPENID_ROLES_CLAIM
+              value: "roles"
+            - name: RUSTFS_IDENTITY_OPENID_DISPLAY_NAME
+              value: "Keycloak"
+
+    - name: Set up TLS certificate for RustFS S3 API
+      ansible.builtin.include_role:
+        name: domain_cert
+      vars:
+        domain_cert_domain: "{{ rustfs_domain }}"
+        domain_cert_cert_name: rustfs-api-cert
+        domain_cert_secret_name: rustfs-api-tls-secret
+        domain_cert_cert_namespace: "{{ rustfs_namespace }}"
+
+    - name: Set up TLS certificate for RustFS console
+      ansible.builtin.include_role:
+        name: domain_cert
+      vars:
+        domain_cert_domain: "{{ rustfs_console_domain }}"
+        domain_cert_cert_name: rustfs-console-cert
+        domain_cert_secret_name: rustfs-console-tls-secret
+        domain_cert_cert_namespace: "{{ rustfs_namespace }}"
+
+    - name: Create RustFS S3 API IngressRoute via Traefik CRD
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: traefik.io/v1alpha1
+          kind: IngressRoute
+          metadata:
+            name: rustfs-api-ingressroute
+            namespace: "{{ rustfs_namespace }}"
+          spec:
+            entryPoints:
+              - websecure
+            routes:
+              - match: "Host(`{{ rustfs_domain }}`)"
+                kind: Rule
+                services:
+                  - name: rustfs-svc
+                    port: 9000
+            tls:
+              secretName: rustfs-api-tls-secret
+
+    - name: Create RustFS console IngressRoute via Traefik CRD
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: traefik.io/v1alpha1
+          kind: IngressRoute
+          metadata:
+            name: rustfs-console-ingressroute
+            namespace: "{{ rustfs_namespace }}"
+          spec:
+            entryPoints:
+              - websecure
+            routes:
+              - match: "Host(`{{ rustfs_console_domain }}`)"
+                kind: Rule
+                services:
+                  - name: rustfs-svc
+                    port: 9001
+            tls:
+              secretName: rustfs-console-tls-secret

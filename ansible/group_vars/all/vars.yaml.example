@@ -139,3 +139,18 @@ prometheus_retention: "14d"
 # tune upward if Prometheus starts OOMKilling under real scrape cardinality,
 prometheus_storage_size: "20Gi"
 alertmanager_storage_size: "2Gi"
+
+# --- RustFS (roles/rustfs, 05_setup_rustfs.yaml) ---
+rustfs_namespace: "rustfs"
+# S3-compatible API endpoint
+rustfs_domain: "rustfs.{{ cluster_domain }}"
+# web console - a separate subdomain from rustfs_domain, since the OIDC
+# login flow (redirect_uris/web_origins below) runs through the console
+rustfs_console_domain: "rustfs-console.{{ cluster_domain }}"
+# Keycloak client id registered for the RustFS console's own OIDC login
+rustfs_client_id: "rustfs-console"
+# pin the Helm chart version
+rustfs_chart_version: "1.0.0"
+# storage sizes for the local-path PVCs backing RustFS's data/log volumes
+rustfs_data_storage_size: "20Gi"
+rustfs_log_storage_size: "2Gi"

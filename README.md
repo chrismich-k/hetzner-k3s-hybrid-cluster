@@ -52,6 +52,11 @@ Two tools, always run in this order:
 * ArgoCD, with login via Keycloak SSO and a local admin account as
   fallback - same pattern as Grafana above.
 
+**`ansible/05_setup_rustfs.yaml` (RustFS, builds on 01 and 02):**
+
+* RustFS, an S3-compatible distributed file system, with login to
+  the console via Keycloak SSO.
+
 **`ansible/25_demo_database.yaml` (Demo database, builds on 01):**
 
 * A standalone Postgres database (CloudNativePG Cluster), pinned to

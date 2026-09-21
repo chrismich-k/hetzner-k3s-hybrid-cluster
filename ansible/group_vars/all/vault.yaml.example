@@ -50,6 +50,12 @@ vault_grafana_admin_password: "securepassword"
 # just put the plain password here like the others in this file.
 vault_argocd_admin_password: "securepassword"
 
+# RustFS S3 access/secret key (roles/rustfs) - passed to the Helm chart via
+# an existing Secret (secret.existingSecret), never as a literal Helm
+# value. Required before running 05_setup_rustfs.yaml for the first time.
+vault_rustfs_access_key: "<access key, e.g. from: openssl rand -hex 12>"
+vault_rustfs_secret_key: "<secret key, e.g. from: openssl rand -base64 24>"
+
 # --- Reserved for future use ---
 # GitOps repo credentials/registry token. roles/argocd installs ArgoCD
 # itself (Helm chart, Keycloak SSO, ingress) but does not yet create a
