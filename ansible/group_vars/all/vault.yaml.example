@@ -56,6 +56,11 @@ vault_argocd_admin_password: "securepassword"
 vault_rustfs_access_key: "<access key, e.g. from: openssl rand -hex 12>"
 vault_rustfs_secret_key: "<secret key, e.g. from: openssl rand -base64 24>"
 
+# pgAdmin4 local break-glass administrator account. The matching
+# login email is pgadmin_admin_email in vars.yaml, not stored here.
+# Required before running 06_setup_pgadmin.yaml for the first time.
+vault_pgadmin_admin_password: "securepassword"
+
 # --- Reserved for future use ---
 # GitOps repo credentials/registry token. roles/argocd installs ArgoCD
 # itself (Helm chart, Keycloak SSO, ingress) but does not yet create a

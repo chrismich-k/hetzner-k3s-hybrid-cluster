@@ -57,6 +57,11 @@ Two tools, always run in this order:
 * RustFS, an S3-compatible distributed file system, with login to
   the console via Keycloak SSO.
 
+**`ansible/06_setup_pgadmin.yaml` (pgAdmin4, builds on 01 and 02):**
+
+* pgAdmin4, a web-based PostgreSQL administration tool, with login via
+  Keycloak SSO and a local admin account as fallback.
+
 **`ansible/25_demo_database.yaml` (Demo database, builds on 01):**
 
 * A standalone Postgres database (CloudNativePG Cluster), pinned to

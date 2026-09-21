@@ -1,0 +1,173 @@
+---
+- name: Install pgAdmin4
+  block:
+    - name: Create pgadmin namespace
+      kubernetes.core.k8s:
+        name: "{{ pgadmin_namespace }}"
+        kind: Namespace
+        state: present
+
+    # this role registers its own Keycloak client
+    - name: Ensure pgAdmin client exists in Keycloak
+      community.general.keycloak_client:
+        auth_keycloak_url: "https://{{ keycloak_domain }}"
+        auth_realm: master
+        auth_username: "{{ vault_keycloak_bootstrap_admin_user }}"
+        auth_password: "{{ vault_keycloak_bootstrap_admin_password }}"
+        realm: "{{ realm_name }}"
+        client_id: "{{ pgadmin_client_id }}"
+        name: "{{ pgadmin_client_id }}"
+        enabled: true
+        protocol: openid-connect
+        public_client: false
+        standard_flow_enabled: true
+        direct_access_grants_enabled: false
+        root_url: "https://{{ pgadmin_domain }}"
+        base_url: "https://{{ pgadmin_domain }}"
+        # pgAdmin's own OAuth2 callback path - fixed by the pgAdmin/authlib
+        # integration itself, not configurable. No role-claim protocol
+        # mapper here possible.
+        redirect_uris:
+          - "https://{{ pgadmin_domain }}/oauth2/authorize"
+        web_origins:
+          - "https://{{ pgadmin_domain }}"
+        state: present
+      register: pgadmin_kc_client_result
+      until: pgadmin_kc_client_result is succeeded
+      retries: 10
+      delay: 15
+
+    - name: Retrieve the pgAdmin client secret from Keycloak
+      community.general.keycloak_clientsecret_info:
+        auth_keycloak_url: "https://{{ keycloak_domain }}"
+        auth_realm: master
+        auth_username: "{{ vault_keycloak_bootstrap_admin_user }}"
+        auth_password: "{{ vault_keycloak_bootstrap_admin_password }}"
+        realm: "{{ realm_name }}"
+        client_id: "{{ pgadmin_client_id }}"
+      register: pgadmin_kc_clientsecret_result
+
+    - name: Build pgAdmin OAUTH2_CONFIG value
+      ansible.builtin.set_fact:
+        pgadmin_oauth2_config: >-
+          [{'OAUTH2_NAME': 'keycloak', 'OAUTH2_DISPLAY_NAME': 'Keycloak',
+          'OAUTH2_CLIENT_ID': '{{ pgadmin_client_id }}',
+          'OAUTH2_CLIENT_SECRET':
+          '{{ pgadmin_kc_clientsecret_result.clientsecret_info.value }}',
+          'OAUTH2_SERVER_METADATA_URL':
+          '{{ oauth_oidc_issuer_url }}/.well-known/openid-configuration',
+          'OAUTH2_SCOPE': 'openid email profile'}]
+      no_log: true
+
+    - name: Create pgAdmin OIDC config secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: pgadmin-oidc-secret
+            namespace: "{{ pgadmin_namespace }}"
+          type: Opaque
+          stringData:
+            oauth2-config: "{{ pgadmin_oauth2_config }}"
+      no_log: true
+
+    # Local break-glass admin, alongside Keycloak SSO (AUTHENTICATION_SOURCES
+    # below keeps both active). This is the only account pgAdmin ever grants
+    # its own internal "Administrator" role to automatically (on first
+    # start) - Keycloak-SSO users never get it, since pgAdmin FOSS maps no
+    # role claim. This admin has to manually promote other users to
+    # Administrator (pgAdmin's own User Management panel) and manually
+    # create any "Shared" server connections.
+    - name: Create pgAdmin admin credentials secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: pgadmin-admin-secret
+            namespace: "{{ pgadmin_namespace }}"
+          type: Opaque
+          stringData:
+            password: "{{ vault_pgadmin_admin_password }}"
+      no_log: true
+
+    - name: Add pgAdmin4 Helm repository
+      kubernetes.core.helm_repository:
+        name: runix
+        repo_url: "https://helm.runix.net"
+
+    - name: Install pgAdmin4 via Helm
+      kubernetes.core.helm:
+        name: pgadmin
+        chart_ref: pgadmin4
+        chart_repo_url: "https://helm.runix.net"
+        chart_version: "{{ pgadmin_chart_version }}"
+        release_namespace: "{{ pgadmin_namespace }}"
+        create_namespace: true
+        values:
+          # fixes the Service name to "pgadmin" instead of the chart's
+          # default "<release>-<chart>" fullname template
+          fullnameOverride: "pgadmin"
+          env:
+            email: "{{ pgadmin_admin_email }}"
+          existingSecret: pgadmin-admin-secret
+          secretKeys:
+            pgadminPasswordKey: password
+          # local-path PV is node-bound - no external backup for this
+          persistentVolume:
+            enabled: true
+            storageClass: local-path
+            size: "{{ pgadmin_storage_size }}"
+          # explicit cert-manager Certificate + Traefik IngressRoute below
+          # instead of the chart's own Ingress object
+          ingress:
+            enabled: false
+          nodeSelector:
+            "node-purpose/infrastructure": "true"
+          tolerations:
+            - key: "node.kubernetes.io/network-unavailable"
+              operator: "Exists"
+              effect: "NoSchedule"
+          envVarsExtra:
+            - name: PGADMIN_CONFIG_AUTHENTICATION_SOURCES
+              value: "['oauth2', 'internal']"
+            - name: PGADMIN_CONFIG_OAUTH2_AUTO_CREATE_USER
+              value: "True"
+            - name: PGADMIN_CONFIG_OAUTH2_CONFIG
+              valueFrom:
+                secretKeyRef:
+                  name: pgadmin-oidc-secret
+                  key: oauth2-config
+
+    - name: Set up TLS certificate for pgAdmin
+      ansible.builtin.include_role:
+        name: domain_cert
+      vars:
+        domain_cert_domain: "{{ pgadmin_domain }}"
+        domain_cert_cert_name: pgadmin-cert
+        domain_cert_secret_name: pgadmin-tls-secret
+        domain_cert_cert_namespace: "{{ pgadmin_namespace }}"
+
+    - name: Create pgAdmin IngressRoute via Traefik CRD
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: traefik.io/v1alpha1
+          kind: IngressRoute
+          metadata:
+            name: pgadmin-ingressroute
+            namespace: "{{ pgadmin_namespace }}"
+          spec:
+            entryPoints:
+              - websecure
+            routes:
+              - match: "Host(`{{ pgadmin_domain }}`)"
+                kind: Rule
+                services:
+                  - name: pgadmin
+                    port: 80
+            tls:
+              secretName: pgadmin-tls-secret

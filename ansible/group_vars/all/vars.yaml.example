@@ -154,3 +154,25 @@ rustfs_chart_version: "1.0.0"
 # storage sizes for the local-path PVCs backing RustFS's data/log volumes
 rustfs_data_storage_size: "20Gi"
 rustfs_log_storage_size: "2Gi"
+
+# --- pgAdmin4 (roles/pgadmin, 06_setup_pgadmin.yaml) ---
+pgadmin_namespace: "pgadmin"
+pgadmin_domain: "pgadmin.{{ cluster_domain }}"
+# Keycloak *client* id for pgAdmin's own OIDC login (separate from
+# oauth_client_id/grafana_client_id/argocd_client_id/rustfs_client_id)
+pgadmin_client_id: "pgadmin"
+# local break-glass admin (logs in past Keycloak entirely) - the only
+# account pgAdmin's own internal "Administrator" role is ever granted to
+# automatically, since pgAdmin FOSS doesn't map any Keycloak role/claim to
+# it. Needed to manually promote other (Keycloak-SSO) users to
+# Administrator and to create "Shared" server connections. The
+# matching password lives in vault.yaml (vault_pgadmin_admin_password).
+pgadmin_admin_email: "<your-pgadmin-local-admin-email>"
+# pin the Helm chart version.
+pgadmin_chart_version: "1.66.0"
+# storage size for the local-path PVC backing pgAdmin's own internal user
+# database (saved connections/query history) - this only ever holds small
+# metadata (accounts, server definitions, query *text* history, not result
+# sets), so it stays tiny even with several users; no external backup for
+# this.
+pgadmin_storage_size: "50Mi"
