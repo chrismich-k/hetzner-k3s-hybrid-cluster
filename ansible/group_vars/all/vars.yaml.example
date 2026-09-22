@@ -176,3 +176,56 @@ pgadmin_chart_version: "1.66.0"
 # sets), so it stays tiny even with several users; no external backup for
 # this.
 pgadmin_storage_size: "50Mi"
+
+# --- Stackable Data Platform: Hive Metastore + Iceberg + Trino + OPA
+# (roles/stackable_operators, roles/hive_metastore, roles/opa, roles/trino,
+# 07_setup_stackable.yaml) ---
+# pin version of operator Helm chart
+stackable_version: "26.7.0"
+# cluster-wide namespace for operators, separate from the stackable_namespace.
+stackable_operators_namespace: "stackable-operators"
+# Hive/Trino/OPA Custom Resources plus the shared S3Connection/SecretClass,
+# as k8sSearch.searchNamespace.pod lookup requires the credentials Secret to
+# be in the same namespace as the pod using it, avoiding double ressources
+# for the same Secret.
+stackable_namespace: "stackable"
+
+# Hive Metastore (Iceberg's catalog) - no web UI/Keycloak client of its own,
+# only reached internally by Trino via Thrift
+hive_product_version: "4.2.0"
+hive_cluster_name: "hive-metastore"
+# CloudNativePG Cluster name for the metastore's own backend DB - a new,
+# dedicated instance via the already-installed CNPG operator
+# (roles/cloudnative_pg).
+hive_metastore_db_name: "hive-metastore-db"
+
+# Open Policy Agent - runs as a DaemonSet (one pod per node), used for
+# Trino's authorization instead of Trino's own file-based system
+opa_product_version: "1.16.2"
+
+# Trino - the actual query engine, with Keycloak OIDC login
+trino_product_version: "481"
+trino_cluster_name: "trino"
+trino_domain: "trino.{{ cluster_domain }}"
+# Keycloak client id for Trino's own OIDC login
+trino_client_id: "trino"
+
+# Iceberg warehouse storage backend - "rustfs" or "hetzner_object_storage".
+# Both are configured below; this just selects which one is actually wired
+# into the shared S3Connection roles/hive_metastore creates.
+stackable_iceberg_storage_backend: "rustfs"
+
+# Option "rustfs" - reuses the RustFS instance already installed by
+# roles/rustfs. Using the public, Traefik/Let's-Encrypt-terminated
+# rustfs_domain because Trino needs TLS.
+stackable_rustfs_bucket: "iceberg-warehouse"
+stackable_rustfs_s3_host: "{{ rustfs_domain }}"
+stackable_rustfs_s3_port: 443
+
+# Option "hetzner_object_storage" - Hetzner's own hosted S3-compatible
+# service, outside the cluster. Access/secret key live in vault.yaml
+# (vault_hetzner_object_storage_access_key/_secret_key), only required if
+# stackable_iceberg_storage_backend is actually set to this value.
+stackable_hetzner_object_storage_bucket: "<bucket-name>"
+stackable_hetzner_object_storage_host: "<location>.your-objectstorage.com"
+stackable_hetzner_object_storage_port: 443

@@ -61,6 +61,20 @@ vault_rustfs_secret_key: "<secret key, e.g. from: openssl rand -base64 24>"
 # Required before running 06_setup_pgadmin.yaml for the first time.
 vault_pgadmin_admin_password: "securepassword"
 
+# Dedicated RustFS access/secret key for the Iceberg warehouse
+# (roles/hive_metastore). This is its own RustFS user, scoped via an IAM
+# policy to just stackable_rustfs_bucket (vars.yaml). Required before running
+# 07_setup_stackable.yaml with the rustfs stackable_iceberg_storage_backend.
+vault_stackable_rustfs_access_key: "<access key, e.g. from: openssl rand -hex 10>"
+vault_stackable_rustfs_secret_key: "<secret key, e.g. from: openssl rand -base64 24>"
+
+# Hetzner Object Storage access/secret key (roles/hive_metastore) - only
+# required if vars.yaml's stackable_iceberg_storage_backend is set to
+# "hetzner_object_storage" instead of the default "rustfs" above. Required
+# before running 07_setup_stackable.yaml with that backend.
+vault_hetzner_object_storage_access_key: "<access key>"
+vault_hetzner_object_storage_secret_key: "<secret key>"
+
 # --- Reserved for future use ---
 # GitOps repo credentials/registry token. roles/argocd installs ArgoCD
 # itself (Helm chart, Keycloak SSO, ingress) but does not yet create a

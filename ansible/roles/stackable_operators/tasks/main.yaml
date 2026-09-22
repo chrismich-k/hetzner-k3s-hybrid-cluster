@@ -1,0 +1,20 @@
+---
+# Base Stackable Data Platform operators, all pinned to the same
+# stackable_version tag. commons/secret/listener are the framework every
+# product operator depends on; hive/trino/opa are the product operators
+# this repo's Hive Metastore + Trino + OPA stack needs.
+- name: Install Stackable operators
+  kubernetes.core.helm:
+    name: "{{ item }}-operator"
+    chart_ref: "oci://oci.stackable.tech/sdp-charts/{{ item }}-operator"
+    chart_version: "{{ stackable_version }}"
+    release_namespace: "{{ stackable_operators_namespace }}"
+    create_namespace: true
+    wait: true
+  loop:
+    - commons
+    - secret
+    - listener
+    - hive
+    - trino
+    - opa

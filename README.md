@@ -62,6 +62,15 @@ Two tools, always run in this order:
 * pgAdmin4, a web-based PostgreSQL administration tool, with login via
   Keycloak SSO and a local admin account as fallback.
 
+**`ansible/07_setup_stackable.yaml` (Stackable, builds on 01, 02, and 05):**
+
+* Stackable, a Kubernetes operator for managing the HiveMetastore/Trino/OPA
+  services.
+* uses either RustFS or Hetzner Object Storage, depending on the
+  `storage_backend` variable.
+* the bucket in vars (`stackable_rustfs_bucket`) must be created in
+  the S3 backend, have a key set up and this key needs to be in the vault.
+
 **`ansible/25_demo_database.yaml` (Demo database, builds on 01):**
 
 * A standalone Postgres database (CloudNativePG Cluster), pinned to

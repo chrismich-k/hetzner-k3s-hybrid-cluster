@@ -1,0 +1,51 @@
+---
+# Open Policy Agent - runs as a DaemonSet (one pod per node), used by
+# roles/trino's TrinoCluster for authorization instead of Trino's own
+# file-based system.
+- name: Install OPA
+  block:
+    - name: Create stackable namespace
+      kubernetes.core.k8s:
+        name: "{{ stackable_namespace }}"
+        kind: Namespace
+        state: present
+
+    - name: Create OpaCluster
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: opa.stackable.tech/v1alpha2
+          kind: OpaCluster
+          metadata:
+            name: opa
+            namespace: "{{ stackable_namespace }}"
+          spec:
+            image:
+              productVersion: "{{ opa_product_version }}"
+            servers:
+              roleGroups:
+                default: {}
+
+    # Basic starting policy: any authenticated Trino user is allowed -
+    # "don't hard-fail/over-restrict by default, tighten this once real
+    # per-user/per-table rules are actually needed.
+    - name: Create base Trino authorization Rego policy bundle
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: trino-opa-bundle
+            namespace: "{{ stackable_namespace }}"
+            labels:
+              opa.stackable.tech/bundle: "true"
+          data:
+            trino.rego: |
+              package trino
+
+              default allow = false
+
+              allow if {
+                input.context.identity.user != ""
+              }

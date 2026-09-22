@@ -1,0 +1,147 @@
+---
+# Hive Metastore (Iceberg's catalog) plus the S3Connection/SecretClass
+# shared with roles/trino's Iceberg TrinoCatalog.
+- name: Install Hive Metastore
+  block:
+    - name: Create stackable namespace
+      kubernetes.core.k8s:
+        name: "{{ stackable_namespace }}"
+        kind: Namespace
+        state: present
+
+    # Either RustFS or Hetzner Object Storage is used as the Iceberg storage
+    # backend. The bucket itself must already exist initially. This uses a
+    # dedicated RustFS user/key, scoped via an IAM policy to just
+    # stackable_rustfs_bucket.
+    - name: Select S3 credentials for the chosen Iceberg storage backend
+      ansible.builtin.set_fact:
+        hive_metastore_stackable_s3_access_key: "{{ vault_stackable_rustfs_access_key
+            if stackable_iceberg_storage_backend == 'rustfs'
+            else vault_hetzner_object_storage_access_key
+          }}"
+        hive_metastore_stackable_s3_secret_key: "{{ vault_stackable_rustfs_secret_key
+            if stackable_iceberg_storage_backend == 'rustfs'
+            else vault_hetzner_object_storage_secret_key
+          }}"
+        hive_metastore_stackable_s3_host: "{{ stackable_rustfs_s3_host
+            if stackable_iceberg_storage_backend == 'rustfs'
+            else stackable_hetzner_object_storage_host
+          }}"
+        hive_metastore_stackable_s3_port: "{{ stackable_rustfs_s3_port
+            if stackable_iceberg_storage_backend == 'rustfs'
+            else stackable_hetzner_object_storage_port
+          }}"
+      no_log: true
+
+    - name: Create S3 credentials secret for the Iceberg warehouse
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: stackable-warehouse-s3-credentials
+            namespace: "{{ stackable_namespace }}"
+            labels:
+              secrets.stackable.tech/class: stackable-warehouse-s3-credentials
+          type: Opaque
+          stringData:
+            accessKey: "{{ hive_metastore_stackable_s3_access_key }}"
+            secretKey: "{{ hive_metastore_stackable_s3_secret_key }}"
+      no_log: true
+
+    - name: Create SecretClass for the Iceberg warehouse S3 credentials
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: secrets.stackable.tech/v1alpha2
+          kind: SecretClass
+          metadata:
+            name: stackable-warehouse-s3-credentials
+          spec:
+            backend:
+              k8sSearch:
+                searchNamespace:
+                  pod: {}
+
+    - name: Create shared S3Connection for the Iceberg warehouse
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: s3.stackable.tech/v1alpha1
+          kind: S3Connection
+          metadata:
+            name: stackable-warehouse-s3
+            namespace: "{{ stackable_namespace }}"
+          spec:
+            host: "{{ hive_metastore_stackable_s3_host }}"
+            port: "{{ hive_metastore_stackable_s3_port | int }}"
+            accessStyle: Path
+            credentials:
+              secretClass: stackable-warehouse-s3-credentials
+            # both backend options are public HTTPS endpoints with a public
+            # CA cert (RustFS via Let's Encrypt, Hetzner Object Storage
+            # natively), so the system trust store is enough, no custom
+            # secretClass/CA needed
+            tls:
+              verification:
+                server:
+                  caCert:
+                    webPki: {}
+
+    - name: Create CloudNativePG Postgres instance for Hive Metastore
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: postgresql.cnpg.io/v1
+          kind: Cluster
+          metadata:
+            name: "{{ hive_metastore_db_name }}"
+            namespace: "{{ stackable_namespace }}"
+          spec:
+            instances: 1
+            storage:
+              size: 10Gi
+              storageClass: "local-path"
+            affinity:
+              nodeSelector:
+                "node-purpose/infrastructure": "true"
+              tolerations:
+                - key: "node.kubernetes.io/network-unavailable"
+                  operator: "Exists"
+                  effect: "NoSchedule"
+            bootstrap:
+              initdb:
+                database: hive
+                owner: hive
+
+    - name: Create HiveCluster
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: hive.stackable.tech/v1alpha1
+          kind: HiveCluster
+          metadata:
+            name: "{{ hive_cluster_name }}"
+            namespace: "{{ stackable_namespace }}"
+          spec:
+            image:
+              productVersion: "{{ hive_product_version }}"
+            clusterConfig:
+              metadataDatabase:
+                postgresql:
+                  # CNPG's own generated read-write Service DNS name -
+                  # <cluster>-rw.<namespace>.svc.cluster.local, same
+                  # convention already used by roles/keycloak_operator
+                  host: "{{ hive_metastore_db_name }}-rw.{{ stackable_namespace }}.svc.cluster.local"
+                  database: hive
+                  # CNPG auto-generates this secret from bootstrap.initdb
+                  # above (keys: username, password) - matches exactly what
+                  # Hive's own credentialsSecretName expects, no separate
+                  # secret needed
+                  credentialsSecretName: "{{ hive_metastore_db_name }}-app"
+              s3:
+                reference: stackable-warehouse-s3
+            metastore:
+              roleGroups:
+                default:
+                  replicas: 1
