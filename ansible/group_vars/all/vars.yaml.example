@@ -215,6 +215,11 @@ trino_client_id: "trino"
 # into the shared S3Connection roles/hive_metastore creates.
 stackable_iceberg_storage_backend: "rustfs"
 
+# Sub-path within the chosen backend's bucket used as Hive Metastore's
+# default location for external tables (hive.metastore.warehouse.external.dir,
+# roles/hive_metastore)
+stackable_iceberg_warehouse_path: "warehouse"
+
 # Option "rustfs" - reuses the RustFS instance already installed by
 # roles/rustfs. Using the public, Traefik/Let's-Encrypt-terminated
 # rustfs_domain because Trino needs TLS.

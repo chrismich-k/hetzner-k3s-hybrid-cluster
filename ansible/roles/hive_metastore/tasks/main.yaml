@@ -153,9 +153,8 @@
                 hive-site.xml:
                   metastore.catalog.servlet.auth: "none"
                   metastore.catalog.servlet.port: "9001"
-              roleGroups:
-                default:
-                  replicas: 1
+                  # Default location for external tables
+                  hive.metastore.warehouse.external.dir: "s3a://{{ hive_metastore_stackable_s3_bucket }}/{{ stackable_iceberg_warehouse_path }}"
 
     # The Stackable-managed hive-metastore-metastore Service only exposes
     # the ports the operator itself knows about (Thrift 9083) and not the
