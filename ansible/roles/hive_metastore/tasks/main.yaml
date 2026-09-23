@@ -31,6 +31,10 @@
             if stackable_iceberg_storage_backend == 'rustfs'
             else stackable_hetzner_object_storage_port
           }}"
+        hive_metastore_stackable_s3_bucket: "{{ stackable_rustfs_bucket
+            if stackable_iceberg_storage_backend == 'rustfs'
+            else stackable_hetzner_object_storage_bucket
+          }}"
       no_log: true
 
     - name: Create S3 credentials secret for the Iceberg warehouse
@@ -142,6 +146,37 @@
               s3:
                 reference: stackable-warehouse-s3
             metastore:
+              # Activate Hive Metastore 4.x Iceberg REST Catalog servlet
+              # (port 9001) alongside the classic Thrift interface
+              # (port 9083)
+              configOverrides:
+                hive-site.xml:
+                  metastore.catalog.servlet.auth: "none"
+                  metastore.catalog.servlet.port: "9001"
               roleGroups:
                 default:
                   replicas: 1
+
+    # The Stackable-managed hive-metastore-metastore Service only exposes
+    # the ports the operator itself knows about (Thrift 9083) and not the
+    # REST catalog servlet. Use the pod's own stable app.kubernetes.io/*
+    # labels as selector.
+    - name: Create Service exposing the Hive Metastore Iceberg REST Catalog
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: hive-metastore-rest-catalog
+            namespace: "{{ stackable_namespace }}"
+          spec:
+            selector:
+              app.kubernetes.io/instance: "{{ hive_cluster_name }}"
+              app.kubernetes.io/name: hive
+              app.kubernetes.io/component: metastore
+              app.kubernetes.io/role-group: default
+            ports:
+              - name: rest-catalog
+                port: 9001
+                targetPort: 9001
