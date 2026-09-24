@@ -49,3 +49,13 @@
               allow if {
                 input.context.identity.user != ""
               }
+
+              # Handles Trino's batch endpoint for Filter* ops (SHOW CATALOGS/
+              # SCHEMAS/TABLES etc.); without it these silently return empty
+              # results instead of erroring. Returns indices of allowed
+              # filterResources; allow for any authenticated user.
+              batch contains i if {
+                some i
+                input.action.filterResources[i]
+                input.context.identity.user != ""
+              }
