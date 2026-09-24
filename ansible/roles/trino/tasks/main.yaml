@@ -114,6 +114,9 @@
                   # contains the OPA server's connect string.
                   configMapName: opa
                   package: trino
+                  # We don't use column masking at all, so just turn it off
+                  # instead of adding an unused Rego rule to satisfy it.
+                  enableColumnMasking: false
             coordinators:
               roleConfig:
                 # NOT external-unstable/external-stable - this repo never
