@@ -82,6 +82,10 @@ Two tools, always run in this order:
 * A standalone Postgres database (CloudNativePG Cluster), pinned to
   an infrastructure node
 
+**`ansible/30_dagster_smart.yaml` (Example Code Location for Dagster, builds on 01, 02, 05, 08):**
+* A sample code location for Dagster using a (private) container image from github.
+* Serves as an example of installing and registering a code location in Dagster.
+
 ## Prerequisites
 * An account at [hetzner.com](https://www.hetzner.com/), covering both
   sides you plan to use:

@@ -1,0 +1,7 @@
+---
+# How long a completed (successful or failed) run Job/Pod sticks around
+# before Kubernetes' own TTL-after-finished controller garbage-collects
+# it - Dagster itself never deletes these on its own. 1 hour is enough to
+# still inspect logs/status shortly after a run without letting completed
+# Jobs/Pods accumulate indefinitely.
+dagster_code_location_run_job_ttl_seconds: 3600

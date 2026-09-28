@@ -1,0 +1,169 @@
+---
+# Generic, reusable role: deploys one Dagster code location (a gRPC server
+# serving Dagster Definitions from a container image) and registers it in
+# the shared "dagster-workspace" ConfigMap that roles/dagster's Helm
+# release points the webserver/daemon at (externalConfigmap) - this role
+# never touches the Dagster Helm release itself, so multiple code
+# locations from independent playbooks can be added/updated/removed
+# without any of them needing to know about each other or risk clobbering
+# roles/dagster's own Helm values.
+#
+# Required vars (role-prefixed per ansible-lint's var-naming[no-role-prefix]):
+#   dagster_code_location_name              - unique name for this code
+#     location - used as the Deployment/Service name, the env Secret name,
+#     and the workspace entry's location_name
+#   dagster_code_location_namespace         - namespace to deploy into -
+#     must match roles/dagster's dagster_namespace (same cluster-internal
+#     DNS domain the webserver/daemon resolve grpc_server.host against)
+#   dagster_code_location_image             - image repository (e.g.
+#     ghcr.io/<user>/<repo>/<image>)
+#   dagster_code_location_image_tag         - image tag
+#   dagster_code_location_port              - gRPC server port
+#   dagster_code_location_grpc_args         - list of extra args to
+#     `dagster api grpc` identifying the Definitions inside the image
+#     (e.g. ["-m", "my_package.definitions"])
+#   dagster_code_location_env_secret_data   - dict of env var name/value
+#     pairs for this code location's own application config - always
+#     created as a dedicated Secret and wired in via envFrom, so app
+#     secrets (API keys, credentials, ...) never appear in the Deployment
+#     spec itself
+#
+# Optional:
+#   dagster_code_location_run_job_ttl_seconds - how long a completed run
+#     Job/Pod sticks around before Kubernetes garbage-collects it (default:
+#     3600, see defaults/main.yaml) - Dagster itself never deletes these
+- name: Create environment Secret for the code location
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ dagster_code_location_name }}-env"
+        namespace: "{{ dagster_code_location_namespace }}"
+      type: Opaque
+      stringData: "{{ dagster_code_location_env_secret_data }}"
+  no_log: true
+
+- name: Create code location Deployment
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: "{{ dagster_code_location_name }}"
+        namespace: "{{ dagster_code_location_namespace }}"
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: "{{ dagster_code_location_name }}"
+        template:
+          metadata:
+            labels:
+              app: "{{ dagster_code_location_name }}"
+          spec:
+            # created by roles/dagster - shared across every code location,
+            # since they all pull from the same private GHCR namespace
+            imagePullSecrets:
+              - name: dagster-ghcr-pull-secret
+            containers:
+              - name: "{{ dagster_code_location_name }}"
+                image: "{{ dagster_code_location_image }}:{{ dagster_code_location_image_tag }}"
+                command:
+                  - dagster
+                  - api
+                  - grpc
+                  - --host
+                  - "0.0.0.0"
+                  - --port
+                  - "{{ dagster_code_location_port | string }}"
+                  # tell K8sRunLauncher which image to use for the actual
+                  # run Job pod it launches when a materialization is started.
+                  - --container-image
+                  - "{{ dagster_code_location_image }}:{{ dagster_code_location_image_tag }}"
+                  # The run Job pod also needs its own image-pull secret
+                  # (to pull the same private image) and this code
+                  # location's own env Secret (SMARD_* etc. - the run pod
+                  # doesn't inherit this gRPC server pod's own envFrom).
+                  - --container-context
+                  - >-
+                    {{ {'k8s': {
+                        'image_pull_secrets': [{'name': 'dagster-ghcr-pull-secret'}],
+                        'env_secrets': [dagster_code_location_name ~ '-env'],
+                        'run_k8s_config': {
+                          'job_spec_config': {
+                            'ttl_seconds_after_finished': dagster_code_location_run_job_ttl_seconds
+                          }
+                        }
+                      }} | to_json }}
+                args: "{{ dagster_code_location_grpc_args }}"
+                ports:
+                  - containerPort: "{{ dagster_code_location_port }}"
+                envFrom:
+                  - secretRef:
+                      name: "{{ dagster_code_location_name }}-env"
+
+- name: Create code location Service
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "{{ dagster_code_location_name }}"
+        namespace: "{{ dagster_code_location_namespace }}"
+      spec:
+        selector:
+          app: "{{ dagster_code_location_name }}"
+        ports:
+          - port: "{{ dagster_code_location_port }}"
+            targetPort: "{{ dagster_code_location_port }}"
+
+- name: Read current Dagster workspace ConfigMap
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    name: dagster-workspace
+    namespace: "{{ dagster_code_location_namespace }}"
+  register: dagster_code_location_workspace_info
+
+- name: Parse current workspace.yaml content
+  ansible.builtin.set_fact:
+    dagster_code_location_workspace_current: "{{
+        (dagster_code_location_workspace_info.resources[0].data['workspace.yaml'] | from_yaml)
+        if (dagster_code_location_workspace_info.resources | length > 0)
+        else {'load_from': []}
+      }}"
+
+# Single-expression template (no surrounding literal text) so Ansible
+# preserves the native list/dict types instead of stringifying the result -
+# replaces any existing entry for this same location_name, leaves every
+# other code location's entry untouched.
+- name: Upsert this code location's entry into the workspace
+  ansible.builtin.set_fact:
+    dagster_code_location_workspace_entries: "{{
+        (dagster_code_location_workspace_current.load_from | default([]))
+        | rejectattr('grpc_server.location_name', 'equalto', dagster_code_location_name)
+        | list
+        + [{
+            'grpc_server': {
+              'host': dagster_code_location_name ~ '.' ~ dagster_code_location_namespace ~ '.svc.cluster.local',
+              'port': dagster_code_location_port,
+              'location_name': dagster_code_location_name
+            }
+          }]
+      }}"
+
+- name: Write the updated Dagster workspace ConfigMap
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: dagster-workspace
+        namespace: "{{ dagster_code_location_namespace }}"
+      data:
+        workspace.yaml: "{{ {'load_from': dagster_code_location_workspace_entries} | to_nice_yaml }}"

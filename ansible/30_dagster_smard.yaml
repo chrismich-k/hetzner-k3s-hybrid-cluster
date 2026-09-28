@@ -1,0 +1,74 @@
+---
+# Example: registers the "smard" code location (private GHCR image, built
+# by CI from github_repo_url) with the Dagster platform installed by
+# 08_setup_dagster.yaml. This should eventually be replaced by a GitOps
+# (ArgoCD) deployment, once one exists - it's the pattern to copy for any
+# other code location in the meantime.
+
+- name: Load inventory from Terraform
+  import_playbook: playbooks/00_setup_inventory.yaml
+
+- name: Register the "smard" Dagster code location
+  hosts: clusters
+  become: true
+  environment:
+    KUBECONFIG: "{{ custom_kubeconfig }}"
+  module_defaults:
+    kubernetes.core.k8s:
+      kubeconfig: "{{ custom_kubeconfig }}"
+  vars:
+    dagster_smard_location_name: "smard"
+    dagster_smard_image: "ghcr.io/chrismich-k/ktest-app/dagster-smard"
+    dagster_smard_image_tag: "latest"
+    dagster_smard_grpc_port: 3030
+    # entry point into the image - adjust to match the actual Python
+    # module/attribute the "smard" image exposes
+    dagster_smard_grpc_args:
+      - "-m"
+      - "ktest.smard.definitions"
+  tasks:
+    # Dagster is optional in this repo (08_setup_dagster.yaml) - only
+    # register this code location if the platform is actually installed.
+    - name: Check whether the Dagster platform is installed
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: dagster-dagster-webserver
+        namespace: "{{ dagster_namespace }}"
+      register: dagster_smard_platform_info
+      failed_when: false
+
+    # RustFS's own internal ClusterIP (plain HTTP - pyiceberg/boto3 has no
+    # hard TLS requirement, unlike Trino) if used, otherwise Hetzner Object
+    # Storage's real HTTPS endpoint.
+    - name: Determine the RustFS/S3 endpoint for the smard code location
+      ansible.builtin.set_fact:
+        dagster_smard_s3_endpoint: >-
+          {{ 'http://rustfs-svc.' ~ rustfs_namespace ~ '.svc.cluster.local:9000'
+             if stackable_iceberg_storage_backend == 'rustfs'
+             else 'https://' ~ stackable_hetzner_object_storage_host ~ ':' ~ stackable_hetzner_object_storage_port }}
+
+    - name: Register the smard code location
+      ansible.builtin.include_role:
+        name: dagster_code_location
+      vars:
+        dagster_code_location_name: "{{ dagster_smard_location_name }}"
+        dagster_code_location_namespace: "{{ dagster_namespace }}"
+        dagster_code_location_image: "{{ dagster_smard_image }}"
+        dagster_code_location_image_tag: "{{ dagster_smard_image_tag }}"
+        dagster_code_location_port: "{{ dagster_smard_grpc_port }}"
+        dagster_code_location_grpc_args: "{{ dagster_smard_grpc_args }}"
+        # Iceberg REST Catalog reached over its internal ClusterIP Service
+        # (roles/hive_metastore). Reusing the same RustFS S3 credentials
+        # as Hive/Trino (vault_stackable_rustfs_access_key/_secret_key),
+        # since this code location needs the same iceberg-warehouse bucket
+        # access.
+        dagster_code_location_env_secret_data:
+          SMARD_ICEBERG_REST_URI: "http://hive-metastore-rest-catalog.{{ stackable_namespace }}.svc.cluster.local:9001/iceberg"
+          SMARD_ICEBERG_WAREHOUSE: "s3a://{{ stackable_rustfs_bucket }}/{{ stackable_iceberg_warehouse_path }}"
+          SMARD_S3_ENDPOINT: "{{ dagster_smard_s3_endpoint }}"
+          SMARD_S3_ACCESS_KEY_ID: "{{ vault_stackable_rustfs_access_key }}"
+          SMARD_S3_SECRET_ACCESS_KEY: "{{ vault_stackable_rustfs_secret_key }}"
+      when: >-
+        dagster_smard_platform_info.resources is defined and
+        dagster_smard_platform_info.resources | length > 0
