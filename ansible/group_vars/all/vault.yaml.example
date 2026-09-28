@@ -75,11 +75,16 @@ vault_stackable_rustfs_secret_key: "<secret key, e.g. from: openssl rand -base64
 vault_hetzner_object_storage_access_key: "<access key>"
 vault_hetzner_object_storage_secret_key: "<secret key>"
 
-# --- Reserved for future use ---
-# GitOps repo credentials/registry token. roles/argocd installs ArgoCD
-# itself (Helm chart, Keycloak SSO, ingress) but does not yet create a
-# GitOps Application or a repository-credentials Secret, so this variable
-# isn't read anywhere yet. Kept here, already in the expected shape, for
-# when that gets wired up - see the matching github_repo_url/
-# github_repo_branch reservation in group_vars/all/vars.yaml.
+# Dedicated RustFS access/secret key for Dagster's compute-log bucket
+# (roles/dagster) - its own RustFS user, scoped via an IAM policy to just
+# dagster_rustfs_bucket (vars.yaml), same least-privilege pattern as
+# vault_stackable_rustfs_access_key. Required before running
+# 08_setup_dagster.yaml for the first time.
+vault_dagster_rustfs_access_key: "<access key, e.g. from: openssl rand -hex 10>"
+vault_dagster_rustfs_secret_key: "<secret key, e.g. from: openssl rand -base64 24>"
+
+# GitHub Personal Access Token (read:packages scope) for pulling private
+# ghcr.io/<github_registry_user>/... code location images
+# (roles/dagster_code_location, 08_setup_dagster.yaml /
+# 30_dagster_smard.yaml).
 vault_github_registry_token: "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"

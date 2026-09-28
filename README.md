@@ -62,7 +62,7 @@ Two tools, always run in this order:
 * pgAdmin4, a web-based PostgreSQL administration tool, with login via
   Keycloak SSO and a local admin account as fallback.
 
-**`ansible/07_setup_stackable.yaml` (Stackable, builds on 01, 02, and 05):**
+**`ansible/07_setup_stackable.yaml` (Stackable, builds on 01, 02 and 05):**
 
 * Stackable, a Kubernetes operator for managing the HiveMetastore/Trino/OPA
   services.
@@ -70,6 +70,12 @@ Two tools, always run in this order:
   `storage_backend` variable.
 * the bucket in vars (`stackable_rustfs_bucket`) must be created in
   the S3 backend, have a key set up and this key needs to be in the vault.
+
+**`ansible/08_setup_dagster.yaml` (Dagster, builds on 01, 02 and 05):**
+* Dagster, a modern data orchestration platform.
+* installs the platform itself, not any code locations.
+* currently uses rustfs as the compute log storage, not the default S3
+  storage set via `storage_backend` variable.
 
 **`ansible/25_demo_database.yaml` (Demo database, builds on 01):**
 

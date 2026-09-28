@@ -234,3 +234,21 @@ stackable_rustfs_s3_port: 443
 stackable_hetzner_object_storage_bucket: "<bucket-name>"
 stackable_hetzner_object_storage_host: "<location>.your-objectstorage.com"
 stackable_hetzner_object_storage_port: 443
+
+# --- Dagster platform (roles/dagster, 08_setup_dagster.yaml) ---
+dagster_namespace: "dagster"
+# pin the Helm chart version
+dagster_chart_version: "1.13.24"
+dagster_domain: "dagster.{{ cluster_domain }}"
+dagster_db_name: "dagster-db"
+dagster_app_db: "dagster"
+dagster_app_user: "dagster"
+
+# separate, dedicate RustFS bucket for Dagster's own compute logs
+# (stdout/stderr from runs). Internal ClusterIP is fine here.
+dagster_rustfs_s3_host: "rustfs-svc.{{ rustfs_namespace }}.svc.cluster.local"
+dagster_rustfs_s3_port: 9000
+
+# GitHub user whose ghcr.io packages get pulled via vault_github_registry_token
+# (roles/dagster_code_location) - the source repo itself is github_repo_url above
+github_registry_user: "<your-github-username>"

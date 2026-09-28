@@ -1,0 +1,240 @@
+---
+# Dagster platform (webserver + daemon + Postgres + compute-log storage).
+# Ddoes NOT install any code location - see roles/dagster_code_location for
+# that, kept decoupled so this role's own Helm release never has to know which
+# code locations exist (see the workspace ConfigMap task below).
+- name: Install Dagster platform
+  block:
+    - name: Create dagster namespace
+      kubernetes.core.k8s:
+        name: "{{ dagster_namespace }}"
+        kind: Namespace
+        state: present
+
+    - name: Create CloudNativePG Postgres instance for Dagster
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: postgresql.cnpg.io/v1
+          kind: Cluster
+          metadata:
+            name: "{{ dagster_db_name }}"
+            namespace: "{{ dagster_namespace }}"
+          spec:
+            instances: 1
+            storage:
+              size: 10Gi
+              storageClass: "local-path"
+            affinity:
+              nodeSelector:
+                "node-purpose/infrastructure": "true"
+              tolerations:
+                - key: "node.kubernetes.io/network-unavailable"
+                  operator: "Exists"
+                  effect: "NoSchedule"
+            bootstrap:
+              initdb:
+                database: "{{ dagster_app_db }}"
+                owner: "{{ dagster_app_user }}"
+
+    - name: Read CNPG-generated Postgres credentials for Dagster
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        name: "{{ dagster_db_name }}-app"
+        namespace: "{{ dagster_namespace }}"
+      register: dagster_db_secret_info
+      no_log: true
+
+    # The Dagster Helm chart's own secret-postgres.yaml template expects the
+    # password under the key "postgresql-password".
+    - name: Mirror the Postgres password into the key Dagster's chart expects
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: dagster-postgresql-secret
+            namespace: "{{ dagster_namespace }}"
+          type: Opaque
+          data:
+            postgresql-password: "{{ dagster_db_secret_info.resources[0].data.password }}"
+      no_log: true
+
+    # dagster_aws's S3ComputeLogManager reads credentials purely from the
+    # standard boto3 env vars These get attached to the
+    # webserver/daemon/run-launcher pods via envSecrets below.
+    - name: Create RustFS compute-log credentials secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: dagster-rustfs-credentials
+            namespace: "{{ dagster_namespace }}"
+          type: Opaque
+          stringData:
+            AWS_ACCESS_KEY_ID: "{{ vault_dagster_rustfs_access_key }}"
+            AWS_SECRET_ACCESS_KEY: "{{ vault_dagster_rustfs_secret_key }}"
+      no_log: true
+
+    - name: Build GHCR image pull secret docker config
+      ansible.builtin.set_fact:
+        dagster_ghcr_dockerconfigjson: "{{ {
+            'auths': {
+              'ghcr.io': {
+                'username': github_registry_user,
+                'password': vault_github_registry_token,
+                'auth': (github_registry_user ~ ':' ~ vault_github_registry_token) | b64encode
+              }
+            }
+          } | to_json }}"
+      no_log: true
+
+    - name: Create GHCR image pull secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: dagster-ghcr-pull-secret
+            namespace: "{{ dagster_namespace }}"
+          type: kubernetes.io/dockerconfigjson
+          stringData:
+            .dockerconfigjson: "{{ dagster_ghcr_dockerconfigjson }}"
+      no_log: true
+
+    - name: Check for an existing Dagster workspace ConfigMap
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: ConfigMap
+        name: dagster-workspace
+        namespace: "{{ dagster_namespace }}"
+      register: dagster_workspace_configmap_info
+
+    # this ConfigMap is the single source of truth for which code locations
+    # exist (see roles/dagster_code_location), maintained independently of
+    # this role/Helm release. Re-running this role must never overwrite
+    # whatever roles/dagster_code_location has since added to it.
+    - name: Create initial empty Dagster workspace ConfigMap
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: dagster-workspace
+            namespace: "{{ dagster_namespace }}"
+          data:
+            workspace.yaml: "load_from: []\n"
+      when: dagster_workspace_configmap_info.resources | length == 0
+
+    - name: Add Dagster Helm repository
+      kubernetes.core.helm_repository:
+        name: dagster
+        repo_url: "https://dagster-io.github.io/helm"
+
+    - name: Install Dagster via Helm
+      kubernetes.core.helm:
+        name: dagster
+        chart_ref: dagster/dagster
+        chart_version: "{{ dagster_chart_version }}"
+        release_namespace: "{{ dagster_namespace }}"
+        create_namespace: true
+        values:
+          global:
+            postgresqlSecretName: dagster-postgresql-secret
+          postgresql:
+            enabled: false
+            postgresqlHost: "{{ dagster_db_name }}-rw.{{ dagster_namespace }}.svc.cluster.local"
+            postgresqlUsername: "{{ dagster_app_user }}"
+            postgresqlDatabase: "{{ dagster_app_db }}"
+          generatePostgresqlPasswordSecret: false
+          computeLogManager:
+            type: S3ComputeLogManager
+            config:
+              s3ComputeLogManager:
+                bucket: "{{ dagster_rustfs_bucket }}"
+                endpointUrl: "http://{{ dagster_rustfs_s3_host }}:{{ dagster_rustfs_s3_port }}"
+                useSsl: false
+          dagsterWebserver:
+            envSecrets:
+              - name: dagster-rustfs-credentials
+            # Chart does NOT generate the workspace ConfigMap's content
+            # itself here - it points at the one this role creates/that
+            # roles/dagster_code_location maintains independently.
+            # `servers: []` is required explicitly - kubernetes.core.helm's
+            # values merge with the chart's own defaults rather than replacing
+            # them, and the chart defaults workspace.servers to a non-empty
+            # example entry, which fails validation if left set alongside
+            # externalConfigmap.
+            workspace:
+              enabled: true
+              servers: []
+              externalConfigmap: dagster-workspace
+          dagsterDaemon:
+            envSecrets:
+              - name: dagster-rustfs-credentials
+          # enabled: true so webserver/daemon mount the workspace
+          # ConfigMap at all - enableSubchart: false so this chart never
+          # deploys any code-location Deployment/Service itself, since
+          # roles/dagster_code_location does that separately.
+          dagster-user-deployments:
+            enabled: true
+            enableSubchart: false
+          runLauncher:
+            config:
+              k8sRunLauncher:
+                envSecrets:
+                  - name: dagster-rustfs-credentials
+          ingress:
+            enabled: false
+          imagePullSecrets:
+            - name: dagster-ghcr-pull-secret
+
+    - name: Set up TLS certificate for Dagster
+      ansible.builtin.include_role:
+        name: domain_cert
+      vars:
+        domain_cert_domain: "{{ dagster_domain }}"
+        domain_cert_cert_name: dagster-cert
+        domain_cert_secret_name: dagster-tls-secret
+        domain_cert_cert_namespace: "{{ dagster_namespace }}"
+
+    # Dagster OSS has no built-in login - gated by the existing oauth2_proxy
+    # forward-auth Middleware instead (roles/oauth2_proxy), referenced
+    # cross-namespace via Traefik's native middlewares[].namespace field.
+    - name: Create Dagster IngressRoute via Traefik CRD
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: traefik.io/v1alpha1
+          kind: IngressRoute
+          metadata:
+            name: dagster-ingressroute
+            namespace: "{{ dagster_namespace }}"
+          spec:
+            entryPoints:
+              - websecure
+            routes:
+              - match: "Host(`{{ dagster_domain }}`) && PathPrefix(`/oauth2`)"
+                kind: Rule
+                services:
+                  - name: oauth2-proxy
+                    namespace: "{{ traefik_namespace }}"
+                    port: 4180
+              - match: "Host(`{{ dagster_domain }}`)"
+                kind: Rule
+                middlewares:
+                  # Order oauth-errors -> oauth-auth matters.
+                  - name: oauth-errors
+                    namespace: "{{ traefik_namespace }}"
+                  - name: oauth-auth
+                    namespace: "{{ traefik_namespace }}"
+                services:
+                  - name: dagster-dagster-webserver
+                    port: 80
+            tls:
+              secretName: dagster-tls-secret

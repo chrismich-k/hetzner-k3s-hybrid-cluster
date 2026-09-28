@@ -16,6 +16,11 @@ terraform/backend.tf
 
 # Ansible-Vault: never commit the password used to decrypt vault.yaml files
 # (the vault.yaml files themselves are fine to commit, they're encrypted)
+
+# Local, per-deployment Ansible config - only the *.example templates next
+# to them are tracked (same treatment as terraform/*.tfvars above)
+ansible/group_vars/all/vars.yaml
+ansible/group_vars/all/vault.yaml
 .vault_pass*
 .vault-pass*
 vault_pass.txt
