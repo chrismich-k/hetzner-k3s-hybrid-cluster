@@ -139,6 +139,10 @@ prometheus_retention: "14d"
 # tune upward if Prometheus starts OOMKilling under real scrape cardinality,
 prometheus_storage_size: "20Gi"
 alertmanager_storage_size: "2Gi"
+# CloudNativePG's own Grafana dashboard chart (grafana.com ID 20417) -
+# separate Helm repo from the operator's cnpg/cloudnative-pg chart
+# (https://cloudnative-pg.github.io/grafana-dashboards, chart "cluster")
+cnpg_grafana_dashboard_chart_version: "0.0.5"
 
 # --- RustFS (roles/rustfs, 05_setup_rustfs.yaml) ---
 rustfs_namespace: "rustfs"

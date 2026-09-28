@@ -46,6 +46,7 @@ Two tools, always run in this order:
 * Prometheus, Grafana, and Alertmanager (via the `kube_prometheus_stack`
   Helm chart), pinned to your infrastructure node(s).
 * Grafana login via Keycloak SSO, with a local admin account as fallback.
+* Dashboard for monitoring any CloudNativePG cluster.
 
 **`ansible/04_setup_argocd.yaml` (ArgoCD, builds on 01 and 02):**
 

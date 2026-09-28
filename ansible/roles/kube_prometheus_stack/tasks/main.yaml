@@ -275,6 +275,47 @@
                 memory: 128Mi
                 cpu: 100m
 
+    # One PodMonitor for every CloudNativePG Cluster in every namespace,
+    # each CNPG instance pod runs its own built-in exporter on the
+    # named port "metrics" (9187).
+    - name: Create PodMonitor for all CloudNativePG clusters
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: monitoring.coreos.com/v1
+          kind: PodMonitor
+          metadata:
+            name: cnpg-clusters
+            namespace: "{{ monitoring_namespace }}"
+            labels:
+              release: kube-prometheus-stack
+          spec:
+            namespaceSelector:
+              any: true
+            selector:
+              matchExpressions:
+                - key: cnpg.io/cluster
+                  operator: Exists
+              matchLabels:
+                cnpg.io/podRole: instance
+            podMetricsEndpoints:
+              - port: metrics
+
+    - name: Add CloudNativePG Grafana dashboards Helm repository
+      kubernetes.core.helm_repository:
+        name: cnpg-grafana
+        repo_url: "https://cloudnative-pg.github.io/grafana-dashboards"
+
+    # Renders a single ConfigMap labeled grafana_dashboard: "1", which the
+    # chart-default Grafana dashboard sidecar picks up from this namespace.
+    # One dashboard covers every CNPG Cluster (namespace/cluster dropdowns).
+    - name: Install CloudNativePG Grafana dashboard via Helm
+      kubernetes.core.helm:
+        name: cnpg-grafana-dashboard
+        chart_ref: cnpg-grafana/cluster
+        chart_version: "{{ cnpg_grafana_dashboard_chart_version }}"
+        release_namespace: "{{ monitoring_namespace }}"
+
     - name: Set up TLS certificate for Grafana
       ansible.builtin.include_role:
         name: domain_cert
