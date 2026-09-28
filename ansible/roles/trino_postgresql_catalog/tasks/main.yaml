@@ -1,0 +1,70 @@
+---
+# Generic, reusable role: registers an existing PostgreSQL database as a
+# Trino catalog via a TrinoCatalog CR (spec.connector.postgresql).
+#
+# Required vars (role-prefixed per ansible-lint's var-naming[no-role-prefix]):
+#   trino_postgresql_catalog_name                    - TrinoCatalog CR name,
+#     also the catalog name Trino SQL sees (e.g. "postgres")
+#   trino_postgresql_catalog_namespace                - namespace for the
+#     TrinoCatalog (and the mirrored credentials Secret below) - must match
+#     wherever the target TrinoCluster's other catalogs live
+#   trino_postgresql_catalog_trino_cluster_name       - value for the "trino"
+#     label - must match the target TrinoCluster's catalogLabelSelector
+#   trino_postgresql_catalog_host                     - Postgres host (e.g. a
+#     CNPG Cluster's own <cluster>-rw Service DNS name)
+#   trino_postgresql_catalog_database                 - database name
+#   trino_postgresql_catalog_source_secret_name       - name of the existing
+#     Secret holding username/password (e.g. CNPG's auto-generated
+#     <cluster>-app secret)
+#   trino_postgresql_catalog_source_secret_namespace  - namespace that Secret
+#     actually lives in - may differ from trino_postgresql_catalog_namespace
+#     (the source Postgres instance need not live anywhere near Trino) -
+#     Kubernetes Secret references never work across namespaces, so this
+#     role mirrors the credentials into trino_postgresql_catalog_namespace
+#     rather than requiring the caller to do that themselves
+#
+# Optional:
+#   trino_postgresql_catalog_port - Postgres port (default: 5432, see
+#     defaults/main.yaml)
+- name: Read PostgreSQL credentials secret
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: "{{ trino_postgresql_catalog_source_secret_name }}"
+    namespace: "{{ trino_postgresql_catalog_source_secret_namespace }}"
+  register: trino_postgresql_catalog_source_secret_info
+  no_log: true
+
+- name: Mirror PostgreSQL credentials into the Trino catalog's namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ trino_postgresql_catalog_name }}-credentials"
+        namespace: "{{ trino_postgresql_catalog_namespace }}"
+      type: Opaque
+      data:
+        username: "{{ trino_postgresql_catalog_source_secret_info.resources[0].data.username }}"
+        password: "{{ trino_postgresql_catalog_source_secret_info.resources[0].data.password }}"
+  no_log: true
+
+- name: Create TrinoCatalog for the PostgreSQL database
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: trino.stackable.tech/v1alpha1
+      kind: TrinoCatalog
+      metadata:
+        name: "{{ trino_postgresql_catalog_name }}"
+        namespace: "{{ trino_postgresql_catalog_namespace }}"
+        labels:
+          trino: "{{ trino_postgresql_catalog_trino_cluster_name }}"
+      spec:
+        connector:
+          postgresql:
+            host: "{{ trino_postgresql_catalog_host }}"
+            port: "{{ trino_postgresql_catalog_port | int }}"
+            database: "{{ trino_postgresql_catalog_database }}"
+            credentialsSecretName: "{{ trino_postgresql_catalog_name }}-credentials"

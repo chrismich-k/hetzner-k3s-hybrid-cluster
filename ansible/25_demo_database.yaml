@@ -71,3 +71,30 @@
               limits:
                 memory: "4Gi"
                 cpu: "1"
+
+    # Trino is optional in this repo (07_setup_stackable.yaml) - only
+    # register this database as a Trino catalog if a TrinoCluster actually
+    # exists.
+    - name: Check whether Trino is installed
+      kubernetes.core.k8s_info:
+        api_version: trino.stackable.tech/v1alpha1
+        kind: TrinoCluster
+        name: "{{ trino_cluster_name }}"
+        namespace: "{{ stackable_namespace }}"
+      register: demo_database_trino_cluster_info
+      failed_when: false
+
+    - name: Register the demo database as a Trino catalog
+      ansible.builtin.include_role:
+        name: trino_postgresql_catalog
+      vars:
+        trino_postgresql_catalog_name: "{{ pg_cluster_name }}"
+        trino_postgresql_catalog_namespace: "{{ stackable_namespace }}"
+        trino_postgresql_catalog_trino_cluster_name: "{{ trino_cluster_name }}"
+        trino_postgresql_catalog_host: "{{ pg_cluster_name }}-rw.database.svc.cluster.local"
+        trino_postgresql_catalog_database: "{{ demo_app_db }}"
+        trino_postgresql_catalog_source_secret_name: "{{ pg_cluster_name }}-app"
+        trino_postgresql_catalog_source_secret_namespace: database
+      when: >-
+        demo_database_trino_cluster_info.resources is defined and
+        demo_database_trino_cluster_info.resources | length > 0
