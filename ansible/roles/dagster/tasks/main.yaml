@@ -151,6 +151,15 @@
             postgresqlHost: "{{ dagster_db_name }}-rw.{{ dagster_namespace }}.svc.cluster.local"
             postgresqlUsername: "{{ dagster_app_user }}"
             postgresqlDatabase: "{{ dagster_app_db }}"
+            # Pin the psycopg2 driver explicitly: dagster_postgres builds a
+            # plain "postgresql://" URL by default, and SQLAlchemy 2.1
+            # changed that URL's default driver from psycopg2 to psycopg
+            # (v3) - which dagster_postgres isn't compatible with (it
+            # depends on psycopg2-binary). Code location images resolving
+            # sqlalchemy>=2.1 would otherwise break in their run pods,
+            # which get this same instance config (run/event/schedule
+            # storage) from the chart's dagster-instance ConfigMap.
+            postgresqlScheme: "postgresql+psycopg2"
           generatePostgresqlPasswordSecret: false
           computeLogManager:
             type: S3ComputeLogManager
