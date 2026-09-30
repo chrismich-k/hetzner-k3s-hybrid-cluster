@@ -10,8 +10,12 @@
 #
 # Required vars (role-prefixed per ansible-lint's var-naming[no-role-prefix]):
 #   dagster_code_location_name              - unique name for this code
-#     location - used as the Deployment/Service name, the env Secret name,
-#     and the workspace entry's location_name
+#     location, used verbatim as the workspace entry's location_name -
+#     Dagster doesn't allow "-" here, so use "_" as a separator if needed
+#     (e.g. "smard_prices"). Kubernetes resource names (Deployment,
+#     Service, env Secret, labels) get a derived variant with every "_"
+#     replaced by "-" instead (dagster_code_location_k8s_name below), since
+#     those in turn don't allow "_".
 #   dagster_code_location_namespace         - namespace to deploy into -
 #     must match roles/dagster's dagster_namespace (same cluster-internal
 #     DNS domain the webserver/daemon resolve grpc_server.host against)
@@ -32,6 +36,24 @@
 #   dagster_code_location_run_job_ttl_seconds - how long a completed run
 #     Job/Pod sticks around before Kubernetes garbage-collects it (default:
 #     3600, see defaults/main.yaml) - Dagster itself never deletes these
+- name: Derive the Kubernetes resource name from the code location name
+  ansible.builtin.set_fact:
+    dagster_code_location_k8s_name: "{{ dagster_code_location_name | replace('_', '-') }}"
+
+# Fail early with a clear message instead of an opaque API-server rejection
+# further down - the Service name is the strictest constraint here (an RFC
+# 1123 DNS label: lowercase alphanumerics and "-", max 63 characters).
+- name: Validate the derived Kubernetes resource name
+  ansible.builtin.assert:
+    that:
+      - dagster_code_location_k8s_name is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+      - dagster_code_location_k8s_name | length <= 63
+    fail_msg: >-
+      dagster_code_location_name "{{ dagster_code_location_name }}" yields the
+      invalid Kubernetes name "{{ dagster_code_location_k8s_name }}" - use only
+      lowercase letters, digits and "_" (max 63 characters, no leading/trailing "_").
+    quiet: true
+
 - name: Create environment Secret for the code location
   kubernetes.core.k8s:
     state: present
@@ -39,7 +61,7 @@
       apiVersion: v1
       kind: Secret
       metadata:
-        name: "{{ dagster_code_location_name }}-env"
+        name: "{{ dagster_code_location_k8s_name }}-env"
         namespace: "{{ dagster_code_location_namespace }}"
       type: Opaque
       stringData: "{{ dagster_code_location_env_secret_data }}"
@@ -52,24 +74,24 @@
       apiVersion: apps/v1
       kind: Deployment
       metadata:
-        name: "{{ dagster_code_location_name }}"
+        name: "{{ dagster_code_location_k8s_name }}"
         namespace: "{{ dagster_code_location_namespace }}"
       spec:
         replicas: 1
         selector:
           matchLabels:
-            app: "{{ dagster_code_location_name }}"
+            app: "{{ dagster_code_location_k8s_name }}"
         template:
           metadata:
             labels:
-              app: "{{ dagster_code_location_name }}"
+              app: "{{ dagster_code_location_k8s_name }}"
           spec:
             # created by roles/dagster - shared across every code location,
             # since they all pull from the same private GHCR namespace
             imagePullSecrets:
               - name: dagster-ghcr-pull-secret
             containers:
-              - name: "{{ dagster_code_location_name }}"
+              - name: "{{ dagster_code_location_k8s_name }}"
                 image: "{{ dagster_code_location_image }}:{{ dagster_code_location_image_tag }}"
                 command:
                   - dagster
@@ -91,7 +113,7 @@
                   - >-
                     {{ {'k8s': {
                         'image_pull_secrets': [{'name': 'dagster-ghcr-pull-secret'}],
-                        'env_secrets': [dagster_code_location_name ~ '-env'],
+                        'env_secrets': [dagster_code_location_k8s_name ~ '-env'],
                         'run_k8s_config': {
                           'job_spec_config': {
                             'ttl_seconds_after_finished': dagster_code_location_run_job_ttl_seconds
@@ -103,7 +125,7 @@
                   - containerPort: "{{ dagster_code_location_port }}"
                 envFrom:
                   - secretRef:
-                      name: "{{ dagster_code_location_name }}-env"
+                      name: "{{ dagster_code_location_k8s_name }}-env"
 
 - name: Create code location Service
   kubernetes.core.k8s:
@@ -112,11 +134,11 @@
       apiVersion: v1
       kind: Service
       metadata:
-        name: "{{ dagster_code_location_name }}"
+        name: "{{ dagster_code_location_k8s_name }}"
         namespace: "{{ dagster_code_location_namespace }}"
       spec:
         selector:
-          app: "{{ dagster_code_location_name }}"
+          app: "{{ dagster_code_location_k8s_name }}"
         ports:
           - port: "{{ dagster_code_location_port }}"
             targetPort: "{{ dagster_code_location_port }}"
@@ -149,7 +171,7 @@
         | list
         + [{
             'grpc_server': {
-              'host': dagster_code_location_name ~ '.' ~ dagster_code_location_namespace ~ '.svc.cluster.local',
+              'host': dagster_code_location_k8s_name ~ '.' ~ dagster_code_location_namespace ~ '.svc.cluster.local',
               'port': dagster_code_location_port,
               'location_name': dagster_code_location_name
             }
