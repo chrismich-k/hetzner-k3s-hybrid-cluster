@@ -17,6 +17,7 @@
     kubernetes.core.k8s:
       kubeconfig: "{{ custom_kubeconfig }}"
   vars:
+    iceberg_namespace: "smard"
     dagster_smard_location_name: "smard"
     dagster_smard_image: "ghcr.io/chrismich-k/ktest-app/dagster-smard"
     dagster_smard_image_tag: "latest"
@@ -66,6 +67,7 @@
         dagster_code_location_env_secret_data:
           SMARD_ICEBERG_REST_URI: "http://hive-metastore-rest-catalog.{{ stackable_namespace }}.svc.cluster.local:9001/iceberg"
           SMARD_ICEBERG_WAREHOUSE: "s3a://{{ stackable_rustfs_bucket }}/{{ stackable_iceberg_warehouse_path }}"
+          SMARD_ICEBERG_NAMESPACE: "{{ iceberg_namespace }}"
           SMARD_S3_ENDPOINT: "{{ dagster_smard_s3_endpoint }}"
           SMARD_S3_ACCESS_KEY_ID: "{{ vault_stackable_rustfs_access_key }}"
           SMARD_S3_SECRET_ACCESS_KEY: "{{ vault_stackable_rustfs_secret_key }}"
