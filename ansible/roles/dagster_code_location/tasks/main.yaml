@@ -123,6 +123,22 @@
                 args: "{{ dagster_code_location_grpc_args }}"
                 ports:
                   - containerPort: "{{ dagster_code_location_port }}"
+                # Schedule/sensor evaluation runs inside THIS gRPC server
+                # pod, which rebuilds the Dagster instance from the
+                # daemon's instance ref - including the Postgres storage
+                # config's `password: {env: DAGSTER_PG_PASSWORD}`. The
+                # chart's own dagster-user-deployments pods get this same
+                # env var automatically; since this role deploys outside
+                # that subchart, it must be wired in explicitly (secret
+                # created by roles/dagster). Run Job pods don't need it
+                # here - K8sRunLauncher injects it via its own
+                # postgres_password_secret setting.
+                env:
+                  - name: DAGSTER_PG_PASSWORD
+                    valueFrom:
+                      secretKeyRef:
+                        name: dagster-postgresql-secret
+                        key: postgresql-password
                 envFrom:
                   - secretRef:
                       name: "{{ dagster_code_location_k8s_name }}-env"
