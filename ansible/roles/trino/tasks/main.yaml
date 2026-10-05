@@ -88,6 +88,41 @@
                         # no custom secretClass/CA needed for Let's Encrypt
                         webPki: {}
 
+    # Non-interactive username/password login for service accounts (dbt,
+    # ...) that can't do OIDC's browser redirect flow - dbt-trino calls
+    # this `method: ldap`, but it's just HTTP basic auth, checked here
+    # against Trino's file-based password authenticator. Secret format
+    # is fixed by the operator: one key per username, value = password.
+    # With trino_static_users empty, both objects are removed again (and
+    # left out of the TrinoCluster below) instead of just being skipped,
+    # so emptying the dict actually disables password login.
+    - name: Create Trino static service-account credentials secret
+      kubernetes.core.k8s:
+        state: "{{ 'present' if trino_static_users | length > 0 else 'absent' }}"
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: trino-static-users
+            namespace: "{{ stackable_namespace }}"
+          type: Opaque
+          stringData: "{{ trino_static_users }}"
+      no_log: true
+
+    - name: Create AuthenticationClass for Trino static service-account login
+      kubernetes.core.k8s:
+        state: "{{ 'present' if trino_static_users | length > 0 else 'absent' }}"
+        definition:
+          apiVersion: authentication.stackable.tech/v1alpha1
+          kind: AuthenticationClass
+          metadata:
+            name: trino-static-users
+          spec:
+            provider:
+              static:
+                userCredentialsSecret:
+                  name: trino-static-users
+
     - name: Create TrinoCluster
       kubernetes.core.k8s:
         state: present
@@ -104,10 +139,14 @@
               catalogLabelSelector:
                 matchLabels:
                   trino: "{{ trino_cluster_name }}"
-              authentication:
-                - authenticationClass: trino-oidc
-                  oidc:
-                    clientCredentialsSecret: trino-oidc-secret
+              # OIDC stays first (web UI login), password auth is offered
+              # alongside it for non-interactive clients, if configured
+              authentication: "{{
+                  [{'authenticationClass': 'trino-oidc',
+                    'oidc': {'clientCredentialsSecret': 'trino-oidc-secret'}}]
+                  + ([{'authenticationClass': 'trino-static-users'}]
+                     if trino_static_users | length > 0 else [])
+                }}"
               authorization:
                 opa:
                   # OpaCluster's own auto-generated discovery ConfigMap

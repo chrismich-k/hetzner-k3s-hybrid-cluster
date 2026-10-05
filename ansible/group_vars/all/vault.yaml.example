@@ -75,6 +75,14 @@ vault_stackable_rustfs_secret_key: "<secret key, e.g. from: openssl rand -base64
 vault_hetzner_object_storage_access_key: "<access key>"
 vault_hetzner_object_storage_secret_key: "<secret key>"
 
+# Trino service accounts (roles/trino) - username: password pairs for
+# non-interactive clients like dbt, logging in via a Stackable "static"
+# AuthenticationClass alongside the Keycloak OIDC login (which needs a
+# browser). In dbt-trino's profiles.yml this is `method: ldap`. Optional:
+# leave it out (or empty) to keep password login disabled.
+vault_trino_static_users:
+  svc-dbt: "<password, e.g. from: openssl rand -base64 24>"
+
 # Dedicated RustFS access/secret key for Dagster's compute-log bucket
 # (roles/dagster) - its own RustFS user, scoped via an IAM policy to just
 # dagster_rustfs_bucket (vars.yaml), same least-privilege pattern as
