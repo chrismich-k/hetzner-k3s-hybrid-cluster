@@ -172,6 +172,16 @@
                 default:
                   replicas: 1
             workers:
+              config:
+                # Stackable sets memory request = limit (a fixed
+                # reservation on the node) and derives the JVM heap (and
+                # with it Trino's query memory limits) from it
+                resources:
+                  memory:
+                    limit: "{{ trino_worker_memory_limit }}"
+                  cpu:
+                    min: "{{ trino_worker_cpu_min }}"
+                    max: "{{ trino_worker_cpu_max }}"
               roleGroups:
                 default:
                   replicas: 1

@@ -213,6 +213,11 @@ trino_cluster_name: "trino"
 trino_domain: "trino.{{ cluster_domain }}"
 # Keycloak client id for Trino's own OIDC login
 trino_client_id: "trino"
+# Trino worker resources (the workers do the actual query execution) -
+# memory is reserved in full on the worker's node (request = limit)
+trino_worker_memory_limit: "16Gi"
+trino_worker_cpu_min: "2"
+trino_worker_cpu_max: "6"
 
 # Iceberg warehouse storage backend - "rustfs" or "hetzner_object_storage".
 # Both are configured below; this just selects which one is actually wired
