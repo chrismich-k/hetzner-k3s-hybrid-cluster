@@ -1,0 +1,5 @@
+---
+# Username -> password dict of Trino service accounts (dbt, ...) that log
+# in with username/password instead of Keycloak OIDC (see tasks/main.yaml).
+# Empty (no vault entry) means password login stays disabled entirely.
+trino_static_users: "{{ vault_trino_static_users | default({}) }}"
