@@ -21,3 +21,15 @@ check "at_least_one_ingress_target" {
     error_message = "no cluster_nodes entry has ingress_target = true - Traefik's DaemonSet will have no node to schedule onto."
   }
 }
+
+check "load_balancer_has_hcloud_agent_targets" {
+  assert {
+    # roles/traefik_loadbalancer restricts LB targets to hcloud *agents*
+    # (no masters, no hrobot nodes) - without at least one, every LB
+    # created here has nothing to forward to
+    condition = length(var.load_balancers) == 0 || anytrue([
+      for k, v in var.cluster_nodes : v.role == "agent" && v.type == "hcloud"
+    ])
+    error_message = "load_balancers is set, but no cluster_nodes entry is a hcloud agent - the load balancer(s) would have no targets."
+  }
+}

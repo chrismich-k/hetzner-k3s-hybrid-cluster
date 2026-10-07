@@ -1,3 +1,11 @@
+# Not a secret - the project name used as a prefix for Hetzner resource
+# names (e.g. load balancers: "<project_name>-<key>"), so Ansible can derive
+# matching names/domains (e.g. "<project_name>.<cluster_domain>") from the
+# same single source.
+output "project_name" {
+  value = var.project_name
+}
+
 output "master_nodes" {
   value = local.all_master_servers
 }
@@ -71,6 +79,24 @@ output "vswitch_subnet_prefix_len" {
 # hetzner_private_network_gateway_ip above.
 output "hetzner_vswitch_gateway_ip" {
   value = cidrhost(var.ip_range_sub_vswitch, 1)
+}
+
+# Not a secret - per-LB data roles/traefik_loadbalancer needs: the Hetzner
+# name/location for HCCM's adoption annotations, the subdomain Ansible
+# combines with cluster_domain into the LB's hostname, the public IPs for
+# DNS and roles/domain_cert's DNS check, and the private IP for reference.
+output "load_balancers" {
+  value = {
+    for k, lb in hcloud_load_balancer.lb : k => {
+      name      = lb.name
+      type      = lb.load_balancer_type
+      location  = lb.location
+      subdomain = coalesce(var.load_balancers[k].subdomain, lb.name)
+      ipv4      = lb.ipv4
+      ipv6      = lb.ipv6
+      ipv4_priv = hcloud_load_balancer_network.lb[k].ip
+    }
+  }
 }
 
 # Single source of truth for the Hetzner credentials that Ansible also needs

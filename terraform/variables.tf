@@ -182,3 +182,47 @@ variable "hcloud_server_image" {
   type    = string
   default = "ubuntu-26.04"
 }
+
+# Optional Hetzner Cloud Load Balancers (load_balancers.tf), keyed by a
+# short app name - each becomes "<project_name>-<key>" in Hetzner, and the
+# key is what roles/traefik_loadbalancer's traefik_lb_name refers to.
+# `subdomain` is the DNS label (relative to Ansible's cluster_domain) whose
+# A/AAAA records point at this LB - Terraform doesn't manage DNS, set those
+# records by hand to the IPs from `terraform output load_balancers`.
+# Defaults to the LB's Hetzner name ("<project_name>-<key>").
+# Empty by default: no LB is created unless configured.
+variable "load_balancers" {
+  type = map(object({
+    type      = string                 # e.g. "lb11"
+    location  = string                 # e.g. "fsn1" - must be in hcloud_network_zone
+    subdomain = optional(string, null) # e.g. "ktest" -> ktest.<cluster_domain>
+    # keeps HCCM from deleting the LB along with its k8s Service (see
+    # load_balancers.tf) - set false + apply before removing an entry
+    delete_protection = optional(bool, true)
+  }))
+  default     = {}
+  description = "Hetzner Cloud Load Balancers to create, keyed by app name (Hetzner name: <project_name>-<key>)"
+
+  validation {
+    condition     = alltrue([for k, v in var.load_balancers : can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", k))])
+    error_message = "load_balancers keys must be lowercase alphanumerics and \"-\" (used in Hetzner and Kubernetes resource names)."
+  }
+
+  validation {
+    condition = alltrue([
+      for k, v in var.load_balancers :
+      v.subdomain == null || can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$", v.subdomain))
+    ])
+    error_message = "load_balancers[*].subdomain must be a valid DNS name relative to cluster_domain (lowercase, e.g. \"ktest\" or \"api.ktest\")."
+  }
+
+  # Each LB needs its own DNS name pointing at it - HCCM's hostname
+  # annotation (roles/traefik_loadbalancer) relies on it resolving to
+  # exactly this LB.
+  validation {
+    condition = length(distinct([
+      for k, v in var.load_balancers : coalesce(v.subdomain, "${var.project_name}-${k}")
+    ])) == length(var.load_balancers)
+    error_message = "load_balancers entries must have distinct subdomains (explicit or the \"<project_name>-<key>\" default)."
+  }
+}

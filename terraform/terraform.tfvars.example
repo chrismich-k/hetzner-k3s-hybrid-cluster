@@ -172,3 +172,24 @@ cluster_nodes = {
     }
   }
 }
+
+# Optional Hetzner Cloud Load Balancers (load_balancers.tf), keyed by app
+# name - created as "<project_name>-<key>" and adopted by HCCM through the
+# k8s Service roles/traefik_loadbalancer creates for the same key. Only
+# hcloud agents become targets (at least one is required). Leave empty
+# ({}) or omit for no load balancer at all.
+# `subdomain` (optional, default "<project_name>-<key>") + Ansible's
+# cluster_domain = the LB's hostname - point its DNS A/AAAA records at the
+# LB's IPs (`terraform output load_balancers`) by hand, one name per LB.
+load_balancers = {
+  "app" = {
+    type      = "lb11"
+    location  = "fsn1"
+    subdomain = "ktest" # -> ktest.<cluster_domain>
+  }
+  # "moreservices" = {
+  #   type     = "lb11"
+  #   location = "fsn1"
+  #   # no subdomain -> "<project_name>-moreservices.<cluster_domain>"
+  # }
+}
