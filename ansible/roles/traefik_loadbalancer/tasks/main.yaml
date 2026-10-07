@@ -1,0 +1,195 @@
+---
+# Generic, reusable role: a dedicated Traefik ingress controller behind one
+# of Terraform's Hetzner Cloud Load Balancers (terraform/load_balancers.tf),
+# plus matching Let's Encrypt ClusterIssuers. Fully separate from k3s's
+# bundled Traefik (hostPort DaemonSet on ingress-target nodes, IngressClass
+# "traefik", ClusterIssuer letsencrypt-prod), which stays the default for
+# every IngressRoute/Ingress that doesn't explicitly opt into this one.
+#
+# Required vars:
+#   traefik_loadbalancer_name - key of the load balancer in terraform's
+#     load_balancers map (e.g. "app"). Everything else derives from it:
+#     namespace/Helm release/IngressClass "traefik-<name>", ClusterIssuers
+#     "letsencrypt-<name>" and "letsencrypt-<name>-staging".
+#   traefik_loadbalancer_chart_version - traefik/traefik chart version,
+#     must match k3s's bundled Traefik (see vars.yaml) since the Traefik
+#     CRDs are cluster-wide and owned by k3s's own traefik-crd chart.
+#
+# Optional:
+#   traefik_loadbalancer_hostname - hostname for HCCM's hostname
+#     annotation (see the Service annotations below); defaults to the LB's
+#     terraform subdomain + "." + cluster_domain.
+#
+# Opting in: IngressRoutes need the annotation
+#   kubernetes.io/ingress.class: traefik-<name>
+# plain Ingresses `spec.ingressClassName: traefik-<name>`, and their
+# Certificates `issuerRef: {kind: ClusterIssuer, name: letsencrypt-<name>}`.
+#
+# Removing a load balancer: delete this role's namespace (and with it the
+# LoadBalancer Service) BEFORE removing the LB from terraform - the other
+# way round, HCCM finds no LB matching the name annotation anymore and
+# silently creates a new, untracked one. Terraform sets delete_protection
+# on the LB, so deleting the Service never deletes the LB itself (HCCM
+# skips protected LBs).
+
+- name: Look up the load balancer in the Terraform output
+  ansible.builtin.set_fact:
+    traefik_loadbalancer_lb: "{{ hostvars['localhost'].tf_out.load_balancers.value[traefik_loadbalancer_name] | default(None) }}"
+
+- name: Validate the load balancer and chart version
+  ansible.builtin.assert:
+    that:
+      - traefik_loadbalancer_lb is not none
+      - traefik_loadbalancer_chart_version is defined
+      - not (traefik_loadbalancer_chart_version | string).startswith('<')
+    fail_msg: >-
+      Either "{{ traefik_loadbalancer_name }}" is not a key of terraform's
+      load_balancers output (run terraform apply first), or
+      traefik_loadbalancer_chart_version is not set in vars.yaml.
+    quiet: true
+
+- name: Derive names for the load balancer's Traefik instance
+  ansible.builtin.set_fact:
+    traefik_loadbalancer_k8s_name: "traefik-{{ traefik_loadbalancer_name }}"
+    traefik_loadbalancer_effective_hostname: >-
+      {{ traefik_loadbalancer_hostname
+         | default(traefik_loadbalancer_lb.subdomain ~ '.' ~ cluster_domain) }}
+
+- name: Create namespace for the load balancer's Traefik instance
+  kubernetes.core.k8s:
+    name: "{{ traefik_loadbalancer_k8s_name }}"
+    kind: Namespace
+    state: present
+
+- name: Add Traefik Helm repository
+  kubernetes.core.helm_repository:
+    name: traefik
+    repo_url: "https://traefik.github.io/charts"
+
+- name: Install Traefik for the load balancer via Helm
+  kubernetes.core.helm:
+    name: "{{ traefik_loadbalancer_k8s_name }}"
+    chart_ref: traefik/traefik
+    chart_version: "{{ traefik_loadbalancer_chart_version }}"
+    release_namespace: "{{ traefik_loadbalancer_k8s_name }}"
+    # CRDs are cluster-wide and already owned by k3s's traefik-crd chart
+    skip_crds: true
+    values:
+      deployment:
+        replicas: "{{ traefik_loadbalancer_replicas }}"
+      podDisruptionBudget:
+        enabled: true
+        maxUnavailable: 1
+      # Own IngressClass - the chart default ("traefik", default class)
+      # would collide with k3s's bundled one
+      ingressClass:
+        enabled: true
+        isDefaultClass: false
+        name: "{{ traefik_loadbalancer_k8s_name }}"
+      # Only handle resources explicitly annotated/classed for this
+      # instance. The bundled Traefik (no ingressClass set) in turn only
+      # handles unannotated resources or ones annotated "traefik".
+      providers:
+        kubernetesCRD:
+          ingressClass: "{{ traefik_loadbalancer_k8s_name }}"
+          allowCrossNamespace: true
+        kubernetesIngress:
+          ingressClass: "{{ traefik_loadbalancer_k8s_name }}"
+      # Entrypoint settings as Traefik static-config flags rather than the
+      # chart's ports.<name>.* values: their values layout has changed
+      # between chart majors, and the chart version here is pinned to
+      # whatever k3s bundles rather than chosen freely.
+      #  - websecure is the only default entrypoint, so routes without
+      #    explicit entryPoints are HTTPS-only
+      #  - web redirects to HTTPS at the lowest priority, so the only
+      #    routes still answering plain HTTP are ones explicitly bound to
+      #    "web" - i.e. cert-manager's HTTP-01 solver (see ClusterIssuers)
+      #  - PROXY protocol from the LB carries the real client IP
+      additionalArguments: "{{
+          ['--entryPoints.websecure.asDefault=true',
+           '--entryPoints.web.http.redirections.entryPoint.to=websecure',
+           '--entryPoints.web.http.redirections.entryPoint.scheme=https',
+           '--entryPoints.web.http.redirections.entryPoint.permanent=true',
+           '--entryPoints.web.http.redirections.entryPoint.priority=1']
+          + ['web', 'websecure'] | map('regex_replace', '^(.*)$',
+              '--entryPoints.\\1.proxyProtocol.trustedIPs=' ~ (traefik_loadbalancer_trusted_ips | join(',')))
+          | list
+        }}"
+      # hcloud agents only - same set of nodes the LB targets (see the
+      # node-selector annotation below), so no extra hop over the vSwitch
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: instance.type
+                    operator: In
+                    values: ["hcloud"]
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: traefik
+                    # chart's own instance label: <release>-<namespace>
+                    app.kubernetes.io/instance: "{{ traefik_loadbalancer_k8s_name }}-{{ traefik_loadbalancer_k8s_name }}"
+      service:
+        # HCCM adopts terraform's LB by name instead of creating its own,
+        # then manages its services (80/443 -> NodePorts) and targets
+        # from this Service.
+        annotations:
+          load-balancer.hetzner.cloud/name: "{{ traefik_loadbalancer_lb.name }}"
+          load-balancer.hetzner.cloud/location: "{{ traefik_loadbalancer_lb.location }}"
+          load-balancer.hetzner.cloud/type: "{{ traefik_loadbalancer_lb.type }}"
+          # targets reached over the private network - requires
+          # HCLOUD_NETWORK in HCCM (roles/hetzner_k3s_hccm)
+          load-balancer.hetzner.cloud/use-private-ip: "true"
+          # hcloud agents only - no masters (control plane stays free of
+          # app traffic), no hrobot nodes (only reachable via public IP)
+          load-balancer.hetzner.cloud/node-selector: "instance.type=hcloud,!node-role.kubernetes.io/control-plane"
+          load-balancer.hetzner.cloud/uses-proxyprotocol: "true"
+          # Status shows this hostname instead of the LB's IPs, so
+          # kube-proxy doesn't short-circuit in-cluster connections to
+          # those IPs straight to Traefik - those would bypass the LB and
+          # arrive without a PROXY header (breaks e.g. cert-manager's
+          # HTTP-01 self-check). Must resolve to this LB via DNS.
+          load-balancer.hetzner.cloud/hostname: "{{ traefik_loadbalancer_effective_hostname }}"
+
+# Same as roles/cluster_letsencrypt's letsencrypt-prod, except the solver
+# goes through this instance's IngressClass, pinned to the plain-HTTP "web"
+# entrypoint (websecure is the default entrypoint here, see above). No
+# nodeSelector for the solver pods - Traefik reaches them via their Service.
+- name: Create Let's Encrypt ClusterIssuers for the load balancer
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: "{{ traefik_loadbalancer_issuer.name }}"
+      spec:
+        acme:
+          server: "{{ traefik_loadbalancer_issuer.server }}"
+          email: "{{ admin_email }}"
+          privateKeySecretRef:
+            name: "{{ traefik_loadbalancer_issuer.name }}-account-key"
+          solvers:
+            - http01:
+                ingress:
+                  ingressClassName: "{{ traefik_loadbalancer_k8s_name }}"
+                  ingressTemplate:
+                    metadata:
+                      annotations:
+                        traefik.ingress.kubernetes.io/router.entrypoints: web
+  loop:
+    - name: "letsencrypt-{{ traefik_loadbalancer_name }}"
+      server: "{{ traefik_loadbalancer_acme_server }}"
+    - name: "letsencrypt-{{ traefik_loadbalancer_name }}-staging"
+      server: "{{ traefik_loadbalancer_acme_staging_server }}"
+  loop_control:
+    loop_var: traefik_loadbalancer_issuer
+    label: "{{ traefik_loadbalancer_issuer.name }}"

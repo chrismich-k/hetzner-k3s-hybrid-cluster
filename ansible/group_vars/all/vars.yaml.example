@@ -261,3 +261,13 @@ dagster_rustfs_s3_port: 9000
 # GitHub user whose ghcr.io packages get pulled via vault_github_registry_token
 # (roles/dagster_code_location) - the source repo itself is github_repo_url above
 github_registry_user: "<your-github-username>"
+
+# --- Traefik ingress per Hetzner load balancer (roles/traefik_loadbalancer,
+# 09_setup_hetzner_lb_ingress.yaml) ---
+# traefik/traefik chart version - must match the chart k3s bundles, since
+# the Traefik CRDs are cluster-wide and owned by k3s's own traefik-crd
+# chart (this role installs with skip_crds). Look it up on a master:
+#   kubectl -n kube-system get helmchart traefik -o jsonpath='{.spec.chart}'
+# e.g. ".../traefik-37.1.1+up37.1.0.tgz" -> "37.1.0" (the "up" version).
+# Re-check after k3s upgrades.
+traefik_loadbalancer_chart_version: "<chart version>"

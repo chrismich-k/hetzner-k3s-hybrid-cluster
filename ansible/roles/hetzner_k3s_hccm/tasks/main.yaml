@@ -48,3 +48,19 @@
           env:
             HCLOUD_ALLOW_UNTAGGED_CLOUD:
               value: "true"
+            # The private network, without enabling networking.enabled
+            # (that would also switch HCCM to hostNetwork and pod-CIDR
+            # allocation/routes, which flannel already handles). Needed by
+            # Load Balancers (roles/traefik_loadbalancer): without it,
+            # "use-private-ip" targets fail ("missing network id"), and
+            # HCCM actively detaches a LB from any network it's attached to
+            # - including terraform's hcloud_load_balancer_network.
+            HCLOUD_NETWORK:
+              valueFrom:
+                secretKeyRef:
+                  name: hcloud
+                  key: network
+            # belt and braces: the route controller doesn't run anyway
+            # without --allocate-node-cidrs (networking.enabled: false)
+            HCLOUD_NETWORK_ROUTES_ENABLED:
+              value: "false"

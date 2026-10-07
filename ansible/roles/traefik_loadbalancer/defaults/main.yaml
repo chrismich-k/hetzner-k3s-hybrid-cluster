@@ -1,0 +1,19 @@
+---
+# Traefik replicas behind the load balancer, spread across hcloud agents
+# (preferred anti-affinity, tasks/main.yaml) - real HA needs at least as
+# many hcloud agents; with fewer, replicas just share a node.
+traefik_loadbalancer_replicas: 2
+
+# Sources trusted to send PROXY protocol headers: the whole private
+# network (the LB's own private IP lives there) plus the pod CIDR - with
+# externalTrafficPolicy: Cluster, kube-proxy re-sources connections it
+# forwards to a Traefik pod on another node from that node's flannel
+# address. The real client IP still arrives intact inside the PROXY header.
+traefik_loadbalancer_trusted_ips:
+  - "{{ hostvars['localhost'].tf_out.ip_range_net_private.value }}"
+  - "{{ k3s_cluster_cidr_ip_v4 }}"
+
+# Let's Encrypt ACME endpoints for the two ClusterIssuers this role creates
+# (letsencrypt-<name> and letsencrypt-<name>-staging)
+traefik_loadbalancer_acme_server: "https://acme-v02.api.letsencrypt.org/directory"
+traefik_loadbalancer_acme_staging_server: "https://acme-staging-v02.api.letsencrypt.org/directory"

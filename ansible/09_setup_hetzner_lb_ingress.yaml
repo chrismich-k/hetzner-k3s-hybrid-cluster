@@ -1,0 +1,33 @@
+---
+# One dedicated Traefik ingress controller + Let's Encrypt ClusterIssuers
+# per Hetzner Cloud Load Balancer in terraform's load_balancers output
+# (roles/traefik_loadbalancer) - adding a LB is: terraform.tfvars entry,
+# terraform apply, DNS records for its subdomain, re-run this playbook.
+# Requires 01 (k3s, HCCM with HCLOUD_NETWORK, cert-manager).
+#
+# Removing a LB: delete its "traefik-<name>" namespace first, THEN remove
+# it from terraform - see roles/traefik_loadbalancer for why. This
+# playbook only creates/updates, it never removes anything.
+
+- name: Load inventory from Terraform
+  import_playbook: playbooks/00_setup_inventory.yaml
+
+- name: Set up a Traefik ingress controller per Hetzner load balancer
+  hosts: clusters
+  become: true
+  environment:
+    KUBECONFIG: "{{ custom_kubeconfig }}"
+  module_defaults:
+    kubernetes.core.k8s:
+      kubeconfig: "{{ custom_kubeconfig }}"
+  tasks:
+    - name: Set up Traefik and ClusterIssuers for each load balancer
+      ansible.builtin.include_role:
+        name: traefik_loadbalancer
+      vars:
+        traefik_loadbalancer_name: "{{ lb_key }}"
+      loop: "{{ hostvars['localhost'].tf_out.load_balancers.value.keys() | list }}"
+      # not "item" - the role loops internally too, and the lazily
+      # evaluated traefik_loadbalancer_name would pick up its loop var
+      loop_control:
+        loop_var: lb_key
