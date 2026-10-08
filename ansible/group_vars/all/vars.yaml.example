@@ -114,6 +114,10 @@ argocd_client_id: "argocd"
 # Keycloak groups involved. Must be set to a real email a user will
 # actually log in with via Keycloak SSO.
 argocd_sso_admin_email: "<your-keycloak-login-email>"
+# Private repo with SOPS/KSOPS-encrypted secrets, read by ArgoCD via a
+# read-only GitHub deploy key (vault_argocd_secrets_repo_ssh_key) - SSH
+# URL form, since deploy keys only work over SSH. Leave unset to skip.
+argocd_secrets_repo_url: "git@github.com:chrismich-k/ktest-secrets.git"
 
 # --- Reserved for future use ---
 # GitOps repo for ArgoCD to track. roles/argocd installs ArgoCD itself

@@ -19,3 +19,8 @@ argocd_admin_password_bcrypt_salt: "hetznerhybridk3sargocd"
 # (ansible_date_time.iso8601 would change every run). Bump this by hand if
 # you ever want ArgoCD's UI to reflect a more accurate change date.
 argocd_admin_password_mtime: "2025-01-01T00:00:00Z"
+
+# viaductoss/ksops image tag for the repo-server's install-ksops init
+# container (tasks/main.yaml) - also determines the kustomize version
+# ArgoCD builds with, since it ships its own matching kustomize binary
+argocd_ksops_version: "v4.5.1"

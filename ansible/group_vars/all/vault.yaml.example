@@ -96,3 +96,17 @@ vault_dagster_rustfs_secret_key: "<secret key, e.g. from: openssl rand -base64 2
 # (roles/dagster_code_location, 08_setup_dagster.yaml /
 # 30_dagster_smard.yaml).
 vault_github_registry_token: "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"
+
+# age private key ("AGE-SECRET-KEY-1...") ArgoCD's repo-server uses to
+# decrypt SOPS-encrypted manifests via KSOPS (roles/argocd) - its public
+# key (age-keygen -y) must be a recipient in the secrets repo's
+# .sops.yaml. Optional: without it ArgoCD just can't decrypt anything.
+vault_sops_age_cluster_key: "AGE-SECRET-KEY-1..."
+
+# Private half of the read-only GitHub deploy key for the secrets repo
+# (vars.yaml's argocd_secrets_repo_url, roles/argocd). Multi-line - use a
+# YAML block scalar:
+vault_argocd_secrets_repo_ssh_key: |
+  -----BEGIN OPENSSH PRIVATE KEY-----
+  ...
+  -----END OPENSSH PRIVATE KEY-----

@@ -76,6 +76,55 @@
             oidc.keycloak.clientSecret: "{{ argocd_kc_clientsecret_result.clientsecret_info.value }}"
       no_log: true
 
+    # age private key ArgoCD's repo-server decrypts SOPS-encrypted
+    # manifests with (KSOPS, see the repoServer Helm values below) - the
+    # matching public key must be a recipient in the secrets repo's
+    # .sops.yaml. Optional: without vault_sops_age_cluster_key the Secret
+    # is simply absent, and the repo-server still starts (optional: true
+    # on the volume) - it just can't decrypt anything.
+    - name: Create SOPS age key secret for ArgoCD's repo-server
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: sops-age
+            namespace: argocd
+          type: Opaque
+          stringData:
+            keys.txt: "{{ vault_sops_age_cluster_key }}\n"
+      no_log: true
+      when: vault_sops_age_cluster_key is defined
+
+    # Read-only access to the private secrets repo (GitHub deploy key) -
+    # ArgoCD picks up any Secret labeled secret-type: repository as repo
+    # credentials. github.com's SSH host keys are in ArgoCD's default
+    # argocd-ssh-known-hosts-cm, so no known_hosts entry is needed here.
+    - name: Create ArgoCD repository credentials for the secrets repo
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: repo-secrets
+            namespace: argocd
+            labels:
+              argocd.argoproj.io/secret-type: repository
+          type: Opaque
+          # no "project": a global repo, usable by every AppProject
+          stringData:
+            type: git
+            # display name only, e.g. "ktest-secrets"
+            name: "{{ argocd_secrets_repo_url | basename | regex_replace('\\.git$', '') }}"
+            url: "{{ argocd_secrets_repo_url }}"
+            sshPrivateKey: "{{ vault_argocd_secrets_repo_ssh_key }}"
+      no_log: true
+      when:
+        - argocd_secrets_repo_url is defined
+        - vault_argocd_secrets_repo_ssh_key is defined
+
     - name: Add ArgoCD Helm Repository
       kubernetes.core.helm_repository:
         name: argo
@@ -98,6 +147,8 @@
             enabled: false
           configs:
             cm:
+              # required for KSOPS, a kustomize exec (KRM) plugin
+              kustomize.buildOptions: "--enable-alpha-plugins --enable-exec"
               resource.customizations: |
                 networking.k8s.io/Ingress:
                   health.lua: |
@@ -138,6 +189,39 @@
               # against above - covered by oidc.config.requestedScopes set
               # explicitly to [openid, profile, email] further up
               scopes: "[email]"
+          # KSOPS (SOPS decryption inside kustomize builds), per KSOPS's
+          # own Argo CD Helm instructions: an init container copies ksops
+          # plus its matching kustomize binary into a shared emptyDir,
+          # which then shadows the repo-server's bundled kustomize. The
+          # age key comes from the sops-age Secret created above.
+          repoServer:
+            env:
+              - name: SOPS_AGE_KEY_FILE
+                value: /sops-age/keys.txt
+            volumes:
+              - name: custom-tools
+                emptyDir: {}
+              - name: sops-age
+                secret:
+                  secretName: sops-age
+                  optional: true
+            initContainers:
+              - name: install-ksops
+                image: "viaductoss/ksops:{{ argocd_ksops_version }}"
+                command: ["/usr/local/bin/ksops", "install", "--with-kustomize", "/custom-tools"]
+                volumeMounts:
+                  - mountPath: /custom-tools
+                    name: custom-tools
+            volumeMounts:
+              - mountPath: /usr/local/bin/kustomize
+                name: custom-tools
+                subPath: kustomize
+              - mountPath: /usr/local/bin/ksops
+                name: custom-tools
+                subPath: ksops
+              - mountPath: /sops-age
+                name: sops-age
+                readOnly: true
           global:
             nodeSelector:
               "node-purpose/infrastructure": "true"
