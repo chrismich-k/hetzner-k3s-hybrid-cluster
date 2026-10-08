@@ -146,13 +146,14 @@
             prometheusSpec:
               retention: "{{ prometheus_retention }}"
               # capped since this node is shared with Postgres/Keycloak-DB -
-              # bump if Prometheus gets OOMKilled under real cardinality
+              # see vars.yaml for sizing (startup WAL replay needs more
+              # memory than steady state)
               resources:
                 requests:
-                  memory: 512Mi
+                  memory: "{{ prometheus_memory_request }}"
                   cpu: 200m
                 limits:
-                  memory: 1Gi
+                  memory: "{{ prometheus_memory_limit }}"
                   cpu: 1000m
               nodeSelector:
                 "node-purpose/infrastructure": "true"
