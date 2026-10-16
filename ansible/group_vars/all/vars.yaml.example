@@ -268,7 +268,8 @@ dagster_rustfs_s3_host: "rustfs-svc.{{ rustfs_namespace }}.svc.cluster.local"
 dagster_rustfs_s3_port: 9000
 
 # GitHub user whose ghcr.io packages get pulled via vault_github_registry_token
-# (roles/dagster_code_location) - the source repo itself is github_repo_url above
+# (pull secret dagster-ghcr-pull-secret of roles/dagster, used by the code
+# locations and their run Jobs) - the source repo itself is github_repo_url above
 github_registry_user: "<your-github-username>"
 
 # --- Traefik ingress per Hetzner load balancer (roles/traefik_loadbalancer,

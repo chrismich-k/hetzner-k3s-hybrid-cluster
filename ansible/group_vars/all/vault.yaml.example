@@ -93,8 +93,8 @@ vault_dagster_rustfs_secret_key: "<secret key, e.g. from: openssl rand -base64 2
 
 # GitHub Personal Access Token (read:packages scope) for pulling private
 # ghcr.io/<github_registry_user>/... code location images
-# (roles/dagster_code_location, 08_setup_dagster.yaml /
-# 30_dagster_smard.yaml).
+# (pull secret dagster-ghcr-pull-secret, roles/dagster,
+# 08_setup_dagster.yaml; used by roles/dagster_code_location).
 vault_github_registry_token: "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"
 
 # age private key ("AGE-SECRET-KEY-1...") ArgoCD's repo-server uses to

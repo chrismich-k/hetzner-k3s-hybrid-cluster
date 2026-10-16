@@ -74,7 +74,11 @@ Two tools, always run in this order:
 
 **`ansible/08_setup_dagster.yaml` (Dagster, builds on 01, 02 and 05):**
 * Dagster, a modern data orchestration platform.
-* installs the platform itself, not any code locations.
+* installs the platform itself, not any code locations: they are
+  deployed separately and registered in the ConfigMap `dagster-workspace`,
+  e.g. via Argo CD as in [ktest-gitops](https://github.com/chrismich-k/ktest-gitops),
+  or for a quick test with the role `dagster_code_location` from a small
+  playbook of your own.
 * currently uses rustfs as the compute log storage, not the default S3
   storage set via `storage_backend` variable.
 
@@ -82,10 +86,6 @@ Two tools, always run in this order:
 
 * A standalone Postgres database (CloudNativePG Cluster), pinned to
   an infrastructure node
-
-**`ansible/30_dagster_smart.yaml` (Example Code Location for Dagster, builds on 01, 02, 05, 08):**
-* A sample code location for Dagster using a (private) container image from github.
-* Serves as an example of installing and registering a code location in Dagster.
 
 ## Prerequisites
 * An account at [hetzner.com](https://www.hetzner.com/), covering both

@@ -1,8 +1,10 @@
 ---
 # Dagster platform (webserver + daemon + Postgres + compute-log storage).
-# Ddoes NOT install any code location - see roles/dagster_code_location for
-# that, kept decoupled so this role's own Helm release never has to know which
-# code locations exist (see the workspace ConfigMap task below).
+# Does NOT install any code location: they are deployed separately, via
+# GitOps/Argo CD (see https://github.com/chrismich-k/ktest-gitops) or, for quick
+# tests, roles/dagster_code_location - so this role's own Helm release never
+# has to know which code locations exist (see the workspace ConfigMap task
+# below).
 - name: Install Dagster platform
   block:
     - name: Create dagster namespace
@@ -115,9 +117,9 @@
       register: dagster_workspace_configmap_info
 
     # this ConfigMap is the single source of truth for which code locations
-    # exist (see roles/dagster_code_location), maintained independently of
-    # this role/Helm release. Re-running this role must never overwrite
-    # whatever roles/dagster_code_location has since added to it.
+    # exist, maintained independently of this role/Helm release (by Argo CD
+    # together with the code locations, or roles/dagster_code_location). Re-running this role must
+    # never overwrite whatever has since been written to it.
     - name: Create initial empty Dagster workspace ConfigMap
       kubernetes.core.k8s:
         state: present
@@ -172,8 +174,9 @@
             envSecrets:
               - name: dagster-rustfs-credentials
             # Chart does NOT generate the workspace ConfigMap's content
-            # itself here - it points at the one this role creates/that
-            # roles/dagster_code_location maintains independently.
+            # itself here - it points at the one this role creates and the
+            # code location deployment (Argo CD, roles/dagster_code_location)
+            # maintains independently.
             # `servers: []` is required explicitly - kubernetes.core.helm's
             # values merge with the chart's own defaults rather than replacing
             # them, and the chart defaults workspace.servers to a non-empty
@@ -189,7 +192,7 @@
           # enabled: true so webserver/daemon mount the workspace
           # ConfigMap at all - enableSubchart: false so this chart never
           # deploys any code-location Deployment/Service itself, since
-          # roles/dagster_code_location does that separately.
+          # they are deployed separately.
           dagster-user-deployments:
             enabled: true
             enableSubchart: false

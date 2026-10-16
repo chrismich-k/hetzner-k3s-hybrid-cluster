@@ -8,6 +8,12 @@
 # without any of them needing to know about each other or risk clobbering
 # roles/dagster's own Helm values.
 #
+# Meant for quick tests (no playbook kept in git; write a small one that
+# includes this role). If the workspace ConfigMap is managed by GitOps
+# (e.g. Argo CD with selfHeal, see https://github.com/chrismich-k/ktest-gitops),
+# the entry this role upserts is reverted on the next sync: add the entry
+# there instead, or pause selfHeal of that Application while testing.
+#
 # Required vars (role-prefixed per ansible-lint's var-naming[no-role-prefix]):
 #   dagster_code_location_name              - unique name for this code
 #     location, used verbatim as the workspace entry's location_name -
