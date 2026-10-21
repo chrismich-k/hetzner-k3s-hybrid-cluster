@@ -26,36 +26,63 @@
               roleGroups:
                 default: {}
 
-    # Basic starting policy: any authenticated Trino user is allowed -
-    # "don't hard-fail/over-restrict by default, tighten this once real
-    # per-user/per-table rules are actually needed.
-    - name: Create base Trino authorization Rego policy bundle
+    # Trino authorization: files/trino.rego is the entry point Trino
+    # queries. Users bound to roles (opa_trino_user_roles) get exactly what
+    # their roles (opa_trino_roles) allow; every other authenticated user may
+    # do anything. Unit tests: tests/trino_test.rego.
+    - name: Check Trino roles and role bindings
+      ansible.builtin.assert:
+        that:
+          - opa_trino_roles.keys() | reject('match', '^[a-z_][a-z0-9_]*$') | list | length == 0
+          - opa_trino_user_roles.values() | flatten | difference(opa_trino_roles.keys() | list) | length == 0
+        fail_msg: >-
+          opa_trino_roles names must be snake_case identifiers and every role in
+          opa_trino_user_roles must be defined in opa_trino_roles
+        quiet: true
+
+    - name: Render Trino authorization policy bundle
+      ansible.builtin.set_fact:
+        opa_trino_bundle: "{{ lookup('ansible.builtin.template', 'trino-opa-bundle.yaml.j2') | from_yaml }}"
+
+    # A bundle that doesn't compile is rejected by OPA: it keeps the last
+    # good one, but after a restart every Trino query would be denied. So
+    # check it with the OPA CLI of the same version before applying it.
+    - name: Download OPA CLI
+      ansible.builtin.get_url:
+        url: "https://github.com/open-policy-agent/opa/releases/download/v{{ opa_product_version }}/opa_linux_amd64_static"
+        checksum: "sha256:https://github.com/open-policy-agent/opa/releases/download/v{{ opa_product_version }}/opa_linux_amd64_static.sha256"
+        dest: /usr/local/bin/opa
+        mode: "0755"
+
+    - name: Check Trino authorization policy bundle
+      block:
+        - name: Create temporary directory for the policy bundle
+          ansible.builtin.tempfile:
+            state: directory
+          register: opa_bundle_dir
+
+        - name: Write policy bundle files
+          ansible.builtin.copy:
+            content: "{{ item.value }}"
+            dest: "{{ opa_bundle_dir.path }}/{{ item.key }}"
+            mode: "0644"
+          loop: "{{ opa_trino_bundle.data | dict2items }}"
+          loop_control:
+            label: "{{ item.key }}"
+
+        - name: Compile policy bundle
+          ansible.builtin.command: opa check {{ opa_bundle_dir.path }}
+          changed_when: false
+      always:
+        - name: Remove temporary directory for the policy bundle
+          ansible.builtin.file:
+            path: "{{ opa_bundle_dir.path }}"
+            state: absent
+          when: opa_bundle_dir.path is defined
+
+    # apply (not merge): files of removed roles disappear from the bundle
+    - name: Create Trino authorization Rego policy bundle
       kubernetes.core.k8s:
         state: present
-        definition:
-          apiVersion: v1
-          kind: ConfigMap
-          metadata:
-            name: trino-opa-bundle
-            namespace: "{{ stackable_namespace }}"
-            labels:
-              opa.stackable.tech/bundle: "true"
-          data:
-            trino.rego: |
-              package trino
-
-              default allow = false
-
-              allow if {
-                input.context.identity.user != ""
-              }
-
-              # Handles Trino's batch endpoint for Filter* ops (SHOW CATALOGS/
-              # SCHEMAS/TABLES etc.); without it these silently return empty
-              # results instead of erroring. Returns indices of allowed
-              # filterResources; allow for any authenticated user.
-              batch contains i if {
-                some i
-                input.action.filterResources[i]
-                input.context.identity.user != ""
-              }
+        apply: true
+        definition: "{{ opa_trino_bundle }}"

@@ -1,0 +1,9 @@
+---
+# Trino roles: role name -> Rego v1 rules (see files/lib.rego for helpers),
+# rendered into package trino.roles.<role name>. Empty: no roles.
+opa_trino_roles: {}
+
+# Role bindings: Trino user -> list of role names from opa_trino_roles. A user
+# with at least one role gets exactly the union of its roles; users without
+# a role keep full access. Empty: every authenticated user may do anything.
+opa_trino_user_roles: {}

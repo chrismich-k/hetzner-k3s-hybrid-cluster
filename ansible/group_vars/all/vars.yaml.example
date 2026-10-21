@@ -216,6 +216,27 @@ hive_metastore_db_name: "hive-metastore-db"
 # Trino's authorization instead of Trino's own file-based system
 opa_product_version: "1.16.2"
 
+# Trino roles (roles/opa): role name (snake_case) -> Rego v1 rules,
+# rendered into package trino.roles.<role name> with data.trino.lib
+# imported as lib (helpers: roles/opa/files/lib.rego). Define `allow` and,
+# for SHOW / information_schema listings, `batch`. Example: read-only
+# access to one schema of dbt views (SECURITY DEFINER, the dbt-trino
+# default, so the tables behind them need no access of their own).
+opa_trino_roles:
+  api_reader: |
+    allow if lib.read_schema("iceberg", "dataware_api")
+    batch contains i if some i in lib.filter_schema("iceberg", "dataware_api")
+  jdbc_metadata: |
+    allow if lib.read_schema("system", "jdbc")
+    batch contains i if some i in lib.filter_schema("system", "jdbc")
+
+# Role bindings: Trino user -> roles from opa_trino_roles. A user with at
+# least one role gets exactly the union of what its roles allow; users
+# without a role (Keycloak logins, svc-dbt, ...) may do anything. Leave
+# both empty ({}) to give every authenticated user full access.
+opa_trino_user_roles:
+  svc-api-ro: [api_reader, jdbc_metadata]
+
 # Trino - the actual query engine, with Keycloak OIDC login
 trino_product_version: "481"
 trino_cluster_name: "trino"

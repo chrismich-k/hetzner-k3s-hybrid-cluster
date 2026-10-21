@@ -71,6 +71,12 @@ Two tools, always run in this order:
   `storage_backend` variable.
 * the bucket in vars (`stackable_rustfs_bucket`) must be created in
   the S3 backend, have a key set up and this key needs to be in the vault.
+* Trino authorization via OPA: service accounts with password login come
+  from the vault (`vault_trino_static_users`), their permissions from
+  roles (`opa_trino_roles`, Rego rules) bound to users
+  (`opa_trino_user_roles`) in vars. Users without a role keep full
+  access. The policy is checked with the OPA CLI before it is applied;
+  unit tests in `ansible/roles/opa/tests/`.
 
 **`ansible/08_setup_dagster.yaml` (Dagster, builds on 01, 02 and 05):**
 * Dagster, a modern data orchestration platform.

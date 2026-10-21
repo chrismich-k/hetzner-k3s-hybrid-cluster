@@ -1,0 +1,37 @@
+{#
+  Trino authorization policy bundle: the fixed policy (files/trino.rego,
+  files/lib.rego), one file per role (opa_trino_roles) and the role bindings
+  (opa_trino_user_roles). OPA's bundle builder collects every ConfigMap with
+  the bundle label in this namespace, so further ConfigMaps may add role
+  bindings of their own (package trino.bindings, user_roles contains
+  [user, role]).
+#}
+{% set bindings %}
+package trino.bindings
+
+# Role bindings from opa_trino_user_roles; user_roles is a partial set, so
+# other files in this package may add bindings of their own.
+user_roles contains binding if {
+	some binding in [
+{% for user, roles in opa_trino_user_roles.items() %}
+{% for role in roles %}
+		[{{ user | to_json }}, {{ role | to_json }}],
+{% endfor %}
+{% endfor %}
+	]
+}
+{% endset %}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trino-opa-bundle
+  namespace: {{ stackable_namespace }}
+  labels:
+    opa.stackable.tech/bundle: "true"
+data:
+  trino.rego: {{ lookup('ansible.builtin.file', 'trino.rego') | to_json }}
+  lib.rego: {{ lookup('ansible.builtin.file', 'lib.rego') | to_json }}
+  bindings_ansible.rego: {{ bindings | to_json }}
+{% for name, rules in opa_trino_roles.items() %}
+  role_{{ name }}.rego: {{ ('package trino.roles.' ~ name ~ '\n\nimport data.trino.lib\n\n' ~ rules) | to_json }}
+{% endfor %}
