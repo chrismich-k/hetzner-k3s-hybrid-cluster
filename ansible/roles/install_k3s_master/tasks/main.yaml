@@ -225,6 +225,25 @@
           --write-kubeconfig-mode="600"
         creates: /usr/local/bin/k3s
 
+    # Not via k3s' node-taint config option: kubelet only applies that when
+    # the node registers for the first time, so it would never reach an
+    # existing master (same as node-label removal, see README). Setting it
+    # through the API works for new and existing masters alike, and
+    # NoSchedule leaves pods already running on the master alone.
+    - name: Taint master against regular workloads
+      kubernetes.core.k8s_taint:
+        kubeconfig: "{{ custom_kubeconfig }}"
+        name: "{{ inventory_hostname }}"
+        state: "{{ 'present' if install_k3s_master_taint_workloads else 'absent' }}"
+        taints:
+          - key: node-role.kubernetes.io/control-plane
+            effect: NoSchedule
+      # a freshly installed master needs a moment to register its node
+      register: install_k3s_master_taint_result
+      until: install_k3s_master_taint_result is succeeded
+      retries: 12
+      delay: 10
+
     - name: Read node-token from master
       ansible.builtin.slurp:
         src: /var/lib/rancher/k3s/server/node-token

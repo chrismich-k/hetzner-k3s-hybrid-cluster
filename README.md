@@ -23,6 +23,10 @@ Two tools, always run in this order:
 * when multiple master nodes are found in `cluster_nodes`, sets up a
   HA cluster - uneven number of masters required. The master actively used
   for cluster joining is manually maintained via `k3s_primary_master` config.
+* masters get the taint `node-role.kubernetes.io/control-plane:NoSchedule`,
+  so regular workloads run on the agents only (k3s' own add-ons tolerate
+  it); `install_k3s_master_taint_workloads: false` for a cluster without
+  agents.
 * For hcloud servers without public IPv4, any outbound IPv4 connections
   initiated by the node use the gateway server configured via 
   `k3s_gateway_server_name` for NAT.
