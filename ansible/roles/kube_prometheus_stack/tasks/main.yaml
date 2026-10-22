@@ -170,10 +170,11 @@
                       requests:
                         storage: "{{ prometheus_storage_size }}"
 
-          # installed, but without any configured receivers (Slack/email) -
-          # wire up alertmanager.config here once actual alert routing is
-          # wanted
+          # routing/receivers in vars/main.yaml (Slack if a webhook URL is in
+          # the vault); route, receivers replace the chart defaults, its
+          # inhibit_rules stay
           alertmanager:
+            config: "{{ kube_prometheus_stack_alertmanager_config }}"
             alertmanagerSpec:
               resources:
                 requests:

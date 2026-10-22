@@ -51,6 +51,10 @@ Two tools, always run in this order:
   Helm chart), pinned to your infrastructure node(s).
 * Grafana login via Keycloak SSO, with a local admin account as fallback.
 * Dashboard for monitoring any CloudNativePG cluster.
+* Alertmanager sends warning/critical alerts of the chart's default rules
+  (node memory, NotReady nodes, crash loops, stuck pods, ...) to Slack, if
+  `vault_alertmanager_slack_webhook_url` is set; routing in
+  `ansible/roles/kube_prometheus_stack/vars/main.yaml`.
 
 **`ansible/04_setup_argocd.yaml` (ArgoCD, builds on 01 and 02):**
 

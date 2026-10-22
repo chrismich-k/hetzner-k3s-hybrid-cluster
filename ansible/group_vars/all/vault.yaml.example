@@ -42,6 +42,12 @@ vault_oauth_cookie_secret: "<32 random bytes, e.g. from: openssl rand -base64 32
 # Required before running 03_setup_monitoring.yaml for the first time.
 vault_grafana_admin_password: "securepassword"
 
+# Slack incoming webhook (roles/kube_prometheus_stack): Alertmanager sends
+# warning/critical alerts of the chart's default rules to its channel.
+# Optional: leave it out (or empty) to keep alerts in Alertmanager/Grafana
+# only. Create it via a Slack app with "Incoming Webhooks" enabled.
+vault_alertmanager_slack_webhook_url: "https://hooks.slack.com/services/T000/B000/XXXX"
+
 # ArgoCD local admin account (roles/argocd) - a break-glass login that
 # stays available alongside the primary Keycloak-SSO login, same pattern
 # as vault_grafana_admin_password above. Required before running

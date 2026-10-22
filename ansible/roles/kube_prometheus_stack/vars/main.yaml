@@ -1,0 +1,47 @@
+---
+# Alertmanager routing for the chart's default alert rules (node memory,
+# NotReady nodes, crash loops, pods stuck in ImagePullBackOff, ...).
+# warning/critical go to Slack if vault_alertmanager_slack_webhook_url is
+# set; everything else (and everything without a webhook) is dropped.
+kube_prometheus_stack_slack_enabled: "{{ vault_alertmanager_slack_webhook_url | default('') | length > 0 }}"
+
+kube_prometheus_stack_slack_receiver:
+  name: slack
+  slack_configs:
+    - api_url: "{{ vault_alertmanager_slack_webhook_url | default('') }}"
+      send_resolved: true
+      # Alertmanager (Go) templates, not Jinja - hence !unsafe
+      title: !unsafe >-
+        [{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}]
+        {{ .CommonLabels.alertname }}{{ with .CommonLabels.namespace }} ({{ . }}){{ end }}
+      text: !unsafe |-
+        {{ range .Alerts }}• *{{ .Labels.severity }}* {{ .Annotations.summary }}{{ with .Annotations.description }}
+          {{ . }}{{ end }}
+        {{ end }}
+
+kube_prometheus_stack_alertmanager_config:
+  route:
+    receiver: "{{ 'slack' if kube_prometheus_stack_slack_enabled else 'null' }}"
+    group_by: [namespace, alertname]
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 12h
+    routes:
+      # always-firing heartbeat / inhibition helpers of the chart
+      - receiver: "null"
+        matchers: ['alertname =~ "Watchdog|InfoInhibitor"']
+      # failed Dagster runs are Dagster's business (one Job per run)
+      - receiver: "null"
+        matchers:
+          - namespace = "{{ dagster_namespace | default('dagster') }}"
+          - alertname =~ "KubeJobFailed|KubeJobNotCompleted"
+      # "cannot tolerate node failure" assumes N-1 redundancy, which this
+      # cluster doesn't have by design: the robot node carries all stateful
+      # infrastructure (PVs) and is also the biggest node, so these always
+      # fire. Real memory/CPU pressure still shows via NodeMemoryHighUtilization,
+      # KubePodNotReady, ...
+      - receiver: "null"
+        matchers: ['alertname =~ "KubeMemoryOvercommit|KubeCPUOvercommit"']
+      - receiver: "null"
+        matchers: ['severity = "info"']
+  receivers: "{{ [{'name': 'null'}] + ([kube_prometheus_stack_slack_receiver] if kube_prometheus_stack_slack_enabled else []) }}"
